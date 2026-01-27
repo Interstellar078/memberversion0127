@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Plus, Trash2, X, Car, Hotel, Globe, MapPin, Search, Ticket, Palmtree, Download, Upload, Loader2, Check, AlertCircle, Info, Lock, FileText, File as FileIcon, GitMerge, Eye, Unlock, PackagePlus } from 'lucide-react';
+import { Plus, Trash2, X, Car, Hotel, Globe, MapPin, Search, Ticket, Palmtree, Download, Upload, Loader2, Check, AlertCircle, Info, Lock, FileText, File as FileIcon, GitMerge, Eye, Unlock, PackagePlus, Eraser } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, User } from '../types';
 import { generateUUID } from '../utils/dateUtils';
@@ -193,6 +193,80 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
       }
   };
 
+  // --- Batch Operations ---
+  const handleClearCountryPrices = () => {
+      if (!selectedCountry) return;
+      // Updated alert message
+      if (!window.confirm(`【警告】确定要清空 【${selectedCountry}】 目录下所有【未更新过】（即时间列为空）的资源价格吗？\n\n系统将把符合条件的以下资源价格重置为 0：\n- 车型\n- 景点门票\n- 酒店\n- 活动\n- 其它服务\n\n此操作不可恢复！`)) return;
+
+      const now = Date.now();
+      let count = 0;
+
+      // 1. Cars (Filter by Region)
+      const newCars = carDB.map(c => {
+          // Add check for !c.lastUpdated (Empty timestamp)
+          if (c.region === selectedCountry && canEdit(c) && !c.lastUpdated) {
+              count++;
+              return { ...c, priceLow: 0, priceHigh: 0, lastUpdated: now };
+          }
+          return c;
+      });
+      if (count > 0 && JSON.stringify(newCars) !== JSON.stringify(carDB)) onUpdateCarDB(newCars);
+
+      // 2. Identify City IDs for this country
+      const targetCityIds = poiCities.filter(c => c.country === selectedCountry).map(c => c.id);
+
+      // 3. Spots
+      const newSpots = poiSpots.map(s => {
+          if (targetCityIds.includes(s.cityId) && canEdit(s) && !s.lastUpdated) {
+               count++;
+               return { ...s, price: 0, lastUpdated: now };
+          }
+          return s;
+      });
+      if (JSON.stringify(newSpots) !== JSON.stringify(poiSpots)) onUpdatePoiSpots(newSpots);
+
+      // 4. Hotels
+      const newHotels = poiHotels.map(h => {
+          if (targetCityIds.includes(h.cityId) && canEdit(h) && !h.lastUpdated) {
+              count++;
+              return { ...h, price: 0, lastUpdated: now };
+          }
+          return h;
+      });
+      if (JSON.stringify(newHotels) !== JSON.stringify(poiHotels)) onUpdatePoiHotels(newHotels);
+
+      // 5. Activities
+      const newActivities = poiActivities.map(a => {
+          if (targetCityIds.includes(a.cityId) && canEdit(a) && !a.lastUpdated) {
+              count++;
+              return { ...a, price: 0, lastUpdated: now };
+          }
+          return a;
+      });
+      if (JSON.stringify(newActivities) !== JSON.stringify(poiActivities)) onUpdatePoiActivities(newActivities);
+
+      // 6. Others
+      if (onUpdatePoiOthers) {
+          const newOthers = poiOthers.map(o => {
+              if (o.country === selectedCountry && canEdit(o) && !o.lastUpdated) {
+                  count++;
+                  return { ...o, price: 0, lastUpdated: now };
+              }
+              return o;
+          });
+          if (JSON.stringify(newOthers) !== JSON.stringify(poiOthers)) onUpdatePoiOthers(newOthers);
+      }
+
+      if (count > 0) {
+          markAsUpdated();
+          if (onForceSave) onForceSave();
+          alert(`操作完成！已清空 ${count} 条资源的旧价格信息。`);
+      } else {
+          alert(`操作完成，但在 ${selectedCountry} 下没有发现【时间列为空】且您有权限编辑的资源。`);
+      }
+  };
+
   if (!isOpen) return null;
 
   const markAsUpdated = () => {
@@ -287,7 +361,19 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
              <>
                 <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                     <div>
-                        <h2 className="text-xl font-bold text-gray-900">{selectedCountry}</h2>
+                        <div className="flex items-center gap-3">
+                            <h2 className="text-xl font-bold text-gray-900">{selectedCountry}</h2>
+                            {/* Batch Clear Prices Button - Super Admin Only */}
+                            {!isReadOnly && isSuperAdmin && (
+                                <button 
+                                    onClick={handleClearCountryPrices} 
+                                    className="text-xs px-2 py-1 bg-white border border-red-200 text-red-600 rounded hover:bg-red-50 flex items-center gap-1 transition-colors"
+                                    title={`清空 ${selectedCountry} 下所有未更新资源的价格`}
+                                >
+                                    <Eraser size={12}/> 批量清空旧价格
+                                </button>
+                            )}
+                        </div>
                         <div className="flex gap-4 mt-4">
                             <button onClick={() => setMainTab('poi')} className={`text-sm font-medium pb-1 border-b-2 transition-colors flex items-center gap-2 ${mainTab === 'poi' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500'}`}><MapPin size={16}/> 地点与资源</button>
                             <button onClick={() => setMainTab('transport')} className={`text-sm font-medium pb-1 border-b-2 transition-colors flex items-center gap-2 ${mainTab === 'transport' ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500'}`}><Car size={16}/> 交通配置</button>

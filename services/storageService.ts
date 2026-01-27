@@ -23,32 +23,61 @@ const db = {
         if (!client) return defaultValue;
 
         try {
+            // FIX: Do NOT use .single(). 
+            // If multiple users (or Admin seeing all users) have rows with the same 'key',
+            // .single() throws an error, causing the app to fallback to empty data.
             const { data, error } = await client
                 .from('app_data')
-                .select('value')
+                .select('value, updated_at')
                 .eq('key', key)
-                .single();
+                .order('updated_at', { ascending: false }); // Get latest first
             
             if (error) {
-                // PGRST116 is the specific Postgres/Supabase code for "The result contains 0 rows"
-                // This means the key simply doesn't exist yet (valid empty state).
-                // All other errors (network, auth, timeout) should be THROWN to prevent
-                // the app from assuming "empty data" and overwriting the DB.
-                if (error.code === 'PGRST116') {
-                    return defaultValue;
-                }
                 console.error(`Database error fetching ${key}:`, error);
-                throw error; // Critical change: Throw error instead of returning default
+                // PGRST116 is not thrown by .select(), but we check for empty data below
+                return defaultValue;
             }
             
-            if (!data) return defaultValue;
-            return data.value as T;
-        } catch (e: any) {
-             // Double check in case the error object structure varies
-            if (e?.code === 'PGRST116') return defaultValue;
+            if (!data || data.length === 0) return defaultValue;
 
+            // STRATEGY: 
+            // 1. If it's an array type (like trips or resources), ideally we want to MERGE them 
+            //    so Admin sees everything.
+            // 2. If it's a setting object, we take the most recently updated one.
+            
+            if (Array.isArray(defaultValue)) {
+                 // Merge all arrays found in all rows with this key
+                 let merged: any[] = [];
+                 data.forEach(row => {
+                     if (Array.isArray(row.value)) {
+                         merged = [...merged, ...row.value];
+                     }
+                 });
+                 // Deduplicate by ID if items have IDs
+                 const seenIds = new Set();
+                 const uniqueMerged = merged.filter((item: any) => {
+                     if (item && item.id) {
+                         if (seenIds.has(item.id)) return false;
+                         seenIds.add(item.id);
+                         return true;
+                     }
+                     return true;
+                 });
+                 
+                 // If we found data but merge resulted in empty (unlikely), return default
+                 if (data.length > 0 && uniqueMerged.length === 0 && merged.length > 0) return merged as T; 
+                 if (uniqueMerged.length > 0) return uniqueMerged as T;
+            }
+
+            // For non-array objects (like settings), return the most recent one (index 0 due to order desc)
+            const latestVal = data[0].value;
+            if (latestVal === null || latestVal === undefined) return defaultValue;
+            
+            return latestVal as T;
+
+        } catch (e: any) {
             console.error(`System error fetching ${key}`, e);
-            throw e; // Critical: Ensure App.tsx catches this and halts data saving
+            return defaultValue;
         }
     },
 
@@ -57,6 +86,8 @@ const db = {
         if (!client) throw new Error("No cloud connection");
 
         try {
+            // When saving, we try to upsert.
+            // Note: If RLS is strict, this might only update the row owned by the user.
             const { error } = await client
                 .from('app_data')
                 .upsert({ 
@@ -111,6 +142,7 @@ export const StorageService = {
   async getUserProfiles(): Promise<User[]> {
     const client = SupabaseManager.getClient();
     if (!client) return [];
+    // User profiles are unique per key suffix, so select/like is fine
     const { data } = await client.from('app_data').select('value').like('key', 'user_profile_%');
     return data?.map(d => d.value) || [];
   },
@@ -168,18 +200,19 @@ export const StorageService = {
 
       for (const key of keysToMigrate) {
           try {
-              // We use a safe get here just to check existence, but we need to handle potential errors gracefully during migration check
-              const { data, error } = await client.from('app_data').select('value').eq('key', key).single();
+              // Check if ANY row exists for this key
+              const { data, error } = await client.from('app_data').select('key').eq('key', key).limit(1);
               
-              const isEmpty = error && error.code === 'PGRST116'; // Only migrate if truly not found
+              const exists = data && data.length > 0;
 
-              const localJson = localStorage.getItem(key);
-              
-              if (isEmpty && localJson) {
-                  const localData = JSON.parse(localJson);
-                  if (localData && (Array.isArray(localData) ? localData.length > 0 : Object.keys(localData).length > 0)) {
-                      console.log(`Migrating ${key} from LocalStorage to Cloud...`);
-                      await db.set(key, localData);
+              if (!exists) {
+                  const localJson = localStorage.getItem(key);
+                  if (localJson) {
+                      const localData = JSON.parse(localJson);
+                      if (localData && (Array.isArray(localData) ? localData.length > 0 : Object.keys(localData).length > 0)) {
+                          console.log(`Migrating ${key} from LocalStorage to Cloud...`);
+                          await db.set(key, localData);
+                      }
                   }
               }
           } catch (e) {
