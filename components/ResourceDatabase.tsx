@@ -408,9 +408,12 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                 <td className="px-4 py-2">
                                                     <select onKeyDown={handleEnterKey} disabled={!canEdit(row)} className="w-full text-sm border-gray-300 rounded disabled:bg-transparent disabled:border-none" value={row.serviceType} onChange={(e) => updateItem<CarCostEntry>(carDB, onUpdateCarDB, row.id, { serviceType: e.target.value })}>
                                                         <option value="包车">包车</option>
-                                                        <option value="城际">城际</option>
+                                                        <option value="接送">接送</option>
                                                         <option value="拼车">拼车</option>
                                                         <option value="接送机">接送机</option>
+                                                        <option value="飞机">飞机</option>
+                                                        <option value="火车">火车</option>
+                                                        <option value="船舶">船舶</option>
                                                         <option value="其它">其它</option>
                                                     </select>
                                                 </td>

@@ -1,12 +1,12 @@
 
 export enum TransportType {
-  Plane = '飞机',
   PrivateCar = '包车',
-  Intercity = '城际',
+  Transfer = '接送',
   Carpool = '拼车',
   PickupDropoff = '接送机',
+  Plane = '飞机',
   Train = '火车',
-  Ship = '轮船',
+  Ship = '船舶',
   Other = '其它'
 }
 

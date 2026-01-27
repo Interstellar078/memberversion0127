@@ -353,7 +353,6 @@ export default function App() {
       }
   };
 
-  // ... [Rest of the file remains exactly the same logic-wise, no changes needed for handlers] ...
   function createEmptyRow(dayIndex: number): DayRow {
     return {
       id: generateUUID(),
@@ -1065,7 +1064,13 @@ export default function App() {
                             relevantCityIds = Array.from(new Set(relevantCityIds));
 
                             // Options filtering
-                            const visibleCars = carDB.filter(c => isResourceVisible(c) && (settings.destinations.includes(c.region) || c.region === '通用'));
+                            // MODIFIED: Filter cars by selected transport types in the row
+                            const visibleCars = carDB.filter(c => 
+                                isResourceVisible(c) && 
+                                (settings.destinations.includes(c.region) || c.region === '通用') &&
+                                (row.transport.length === 0 || row.transport.includes(c.serviceType))
+                            );
+
                             const visibleHotels = poiHotels.filter(isResourceVisible);
                             let hotelOptions = destinationCityIds.length > 0 ? visibleHotels.filter(h => destinationCityIds.includes(h.cityId)) : visibleHotels;
                             const uniqueHotelNames = Array.from(new Set(hotelOptions.map(h => h.name)));
@@ -1086,7 +1091,7 @@ export default function App() {
                                         {row.transportDetails.map(item => (
                                             <div key={item.id} className="flex items-center gap-1 bg-gray-50 p-1 rounded border border-gray-200 text-xs">
                                                 <select className="flex-1 bg-transparent border-none p-0 text-xs w-20" value={item.model} onChange={(e) => updateTransportItem(index, item.id, { model: e.target.value })}>
-                                                     <option value="">选择车型</option>
+                                                     <option value="">选择车型/交通</option>
                                                      {visibleCars.map(c => <option key={c.id} value={c.carModel}>{c.carModel}</option>)}
                                                 </select>
                                                 <span className="text-gray-400">x</span>
