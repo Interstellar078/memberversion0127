@@ -14,7 +14,6 @@ import { addDays, generateUUID } from './utils/dateUtils';
 import { suggestHotels, generateFileName, generateComprehensiveItinerary, ItineraryItem, AIPlanningResult } from './services/geminiService';
 import { AuthService } from './services/authService';
 import { StorageService } from './services/storageService';
-import { SupabaseManager } from './services/supabaseClient';
 
 const INITIAL_ROWS = 8;
 
@@ -119,8 +118,8 @@ export default function App() {
   const totalCost = useMemo(() => rows.reduce((acc, r) => acc + r.transportCost + r.hotelCost + r.ticketCost + r.activityCost + r.otherCost, 0), [rows]);
 
   // --- PERMISSION HELPERS ---
-  const isSuperAdmin = currentUser?.role === 'super_admin';
-  const isAdmin = currentUser?.role === 'admin'; 
+  const isSuperAdmin = currentUser?.role === 'super_admin' || currentUser?.role === 'admin';
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'super_admin'; 
   const isMember = currentUser?.role === 'user'; 
 
   const isResourceVisible = (item: { createdBy?: string, isPublic?: boolean }) => {
@@ -161,6 +160,12 @@ export default function App() {
       };
       initApp();
   }, []);
+
+  useEffect(() => {
+      StorageService.setCurrentUser(currentUser);
+  }, [currentUser]);
+
+
 
   useEffect(() => {
       if (isMember && systemConfig) {

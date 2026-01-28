@@ -61,7 +61,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
   const docUploadRef = useRef<HTMLInputElement>(null);
 
   // --- PERMISSION LOGIC ---
-  const isSuperAdmin = currentUser?.role === 'super_admin';
+  const isSuperAdmin = currentUser?.role === 'super_admin' || currentUser?.role === 'admin';
   const isAdmin = currentUser?.role === 'admin';
   // If not super_admin or admin, is Member (User)
 
