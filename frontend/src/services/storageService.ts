@@ -1,5 +1,6 @@
 import { SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, User, ResourceMetadata } from '../types';
 import { apiGet, apiPut, apiPost } from './apiClient';
+import { resourceApi } from './resourceApi';
 
 const KEYS = {
   DB_CARS: 'travel_builder_db_cars',
@@ -17,6 +18,12 @@ const KEYS = {
 };
 
 let currentUser: User | null = null;
+
+const mapOwner = <T extends { ownerId?: string; owner_id?: string; isPublic?: boolean; is_public?: boolean }>(item: T) => ({
+  ...item,
+  createdBy: item.ownerId ?? (item as any).owner_id,
+  isPublic: item.isPublic ?? (item as any).is_public
+});
 
 const getData = async <T>(key: string, fallback: T, scope?: 'public' | 'private'): Promise<T> => {
   try {
@@ -63,41 +70,29 @@ export const StorageService = {
   },
 
   async getCars(): Promise<CarCostEntry[]> {
-    const [pub, priv] = await Promise.all([
-      getData<CarCostEntry[]>(KEYS.DB_CARS, [], 'public'),
-      getData<CarCostEntry[]>(KEYS.DB_CARS, [], 'private')
-    ]);
-    return mergeLists(pub, priv);
+    const items = await resourceApi.listTransports({ page: 1, size: 5000 });
+    return (items || []).map(mapOwner) as CarCostEntry[];
   },
   async getCities(): Promise<PoiCity[]> {
-    const [pub, priv] = await Promise.all([
-      getData<PoiCity[]>(KEYS.DB_CITIES, [], 'public'),
-      getData<PoiCity[]>(KEYS.DB_CITIES, [], 'private')
-    ]);
-    return mergeLists(pub, priv);
+    const items = await resourceApi.listCities({ page: 1, size: 5000 });
+    return (items || []).map(mapOwner) as PoiCity[];
   },
   async getSpots(): Promise<PoiSpot[]> {
-    const [pub, priv] = await Promise.all([
-      getData<PoiSpot[]>(KEYS.DB_SPOTS, [], 'public'),
-      getData<PoiSpot[]>(KEYS.DB_SPOTS, [], 'private')
-    ]);
-    return mergeLists(pub, priv);
+    const items = await resourceApi.listSpots({ page: 1, size: 5000 });
+    return (items || []).map(mapOwner) as PoiSpot[];
   },
   async getHotels(): Promise<PoiHotel[]> {
-    const [pub, priv] = await Promise.all([
-      getData<PoiHotel[]>(KEYS.DB_HOTELS, [], 'public'),
-      getData<PoiHotel[]>(KEYS.DB_HOTELS, [], 'private')
-    ]);
-    return mergeLists(pub, priv);
+    const items = await resourceApi.listHotels({ page: 1, size: 5000 });
+    return (items || []).map(mapOwner) as PoiHotel[];
   },
   async getActivities(): Promise<PoiActivity[]> {
-    const [pub, priv] = await Promise.all([
-      getData<PoiActivity[]>(KEYS.DB_ACTIVITIES, [], 'public'),
-      getData<PoiActivity[]>(KEYS.DB_ACTIVITIES, [], 'private')
-    ]);
-    return mergeLists(pub, priv);
+    const items = await resourceApi.listActivities({ page: 1, size: 5000 });
+    return (items || []).map(mapOwner) as PoiActivity[];
   },
   async getOthers(): Promise<PoiOther[]> {
+    if (!currentUser) {
+      return getData<PoiOther[]>(KEYS.DB_OTHERS, [], 'public');
+    }
     const [pub, priv] = await Promise.all([
       getData<PoiOther[]>(KEYS.DB_OTHERS, [], 'public'),
       getData<PoiOther[]>(KEYS.DB_OTHERS, [], 'private')
@@ -105,6 +100,9 @@ export const StorageService = {
     return mergeLists(pub, priv);
   },
   async getFiles(): Promise<CountryFile[]> {
+    if (!currentUser) {
+      return getData<CountryFile[]>(KEYS.DB_FILES, [], 'public');
+    }
     const [pub, priv] = await Promise.all([
       getData<CountryFile[]>(KEYS.DB_FILES, [], 'public'),
       getData<CountryFile[]>(KEYS.DB_FILES, [], 'private')
@@ -112,9 +110,11 @@ export const StorageService = {
     return mergeLists(pub, priv);
   },
   async getTrips(): Promise<SavedTrip[]> {
+    if (!currentUser) return [] as SavedTrip[];
     return getData(KEYS.HISTORY, [] as SavedTrip[], 'private');
   },
   async getLocations(): Promise<string[]> {
+    if (!currentUser) return [] as string[];
     return getData(KEYS.LOCATIONS, [], 'private');
   },
 
@@ -132,20 +132,20 @@ export const StorageService = {
     await setData(KEYS.SYSTEM_CONFIG, config, true);
   },
 
-  async saveCars(data: CarCostEntry[]): Promise<void> {
-    await StorageService.saveScoped(KEYS.DB_CARS, data);
+  async saveCars(_data: CarCostEntry[]): Promise<void> {
+    return;
   },
-  async saveCities(data: PoiCity[]): Promise<void> {
-    await StorageService.saveScoped(KEYS.DB_CITIES, data);
+  async saveCities(_data: PoiCity[]): Promise<void> {
+    return;
   },
-  async saveSpots(data: PoiSpot[]): Promise<void> {
-    await StorageService.saveScoped(KEYS.DB_SPOTS, data);
+  async saveSpots(_data: PoiSpot[]): Promise<void> {
+    return;
   },
-  async saveHotels(data: PoiHotel[]): Promise<void> {
-    await StorageService.saveScoped(KEYS.DB_HOTELS, data);
+  async saveHotels(_data: PoiHotel[]): Promise<void> {
+    return;
   },
-  async saveActivities(data: PoiActivity[]): Promise<void> {
-    await StorageService.saveScoped(KEYS.DB_ACTIVITIES, data);
+  async saveActivities(_data: PoiActivity[]): Promise<void> {
+    return;
   },
   async saveOthers(data: PoiOther[]): Promise<void> {
     await StorageService.saveScoped(KEYS.DB_OTHERS, data);
@@ -155,16 +155,20 @@ export const StorageService = {
   },
 
   async saveTrips(data: SavedTrip[]): Promise<void> {
+    if (!currentUser) return;
     await setData(KEYS.HISTORY, data, false);
   },
   async saveLocations(data: string[]): Promise<void> {
+    if (!currentUser) return;
     await setData(KEYS.LOCATIONS, data, false);
   },
 
   async getAppSettings(): Promise<any> {
+    if (!currentUser) return {};
     return getData(KEYS.SETTINGS_GLOBAL, {}, 'private');
   },
   async saveAppSettings(settings: any): Promise<void> {
+    if (!currentUser) return;
     await setData(KEYS.SETTINGS_GLOBAL, settings, false);
   },
 
@@ -197,6 +201,7 @@ export const StorageService = {
   },
 
   async saveScoped<T extends { isPublic?: boolean }>(key: string, items: T[]): Promise<void> {
+    if (!currentUser) return;
     const { pub, priv } = splitByPublic(items);
     const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'super_admin';
     if (isAdmin) {

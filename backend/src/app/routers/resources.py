@@ -5,7 +5,7 @@ from sqlalchemy import select, or_, func, desc
 from sqlalchemy.orm import Session
 import uuid
 
-from ..deps import get_db, get_current_user
+from ..deps import get_db, get_current_user, get_current_user_optional
 from ..models import (
     User, ResourceCountry, ResourceCity, ResourceSpot, ResourceHotel, 
     ResourceActivity, ResourceTransport
@@ -25,13 +25,25 @@ router = APIRouter(prefix="/api/resources", tags=["resources"])
 def paginate_query(query, page: int, size: int):
     return query.offset((page - 1) * size).limit(size)
 
-def apply_scope_filter(query, model, user: User, scope: str = "all"):
+def apply_scope_filter(query, model, user: User | None, scope: str = "all"):
+    if not user:
+        if scope == "private":
+            return query.where(False)
+        return query.where(model.is_public == True)
     if scope == "private":
         return query.where(model.owner_id == user.username)
-    elif scope == "public":
+    if scope == "public":
         return query.where(model.is_public == True)
-    else: # all
-        return query.where(or_(model.owner_id == user.username, model.is_public == True))
+    return query.where(or_(model.owner_id == user.username, model.is_public == True))
+
+
+def mask_prices_for_guest(items):
+    for item in items:
+        if isinstance(item, (ResourceSpot, ResourceHotel, ResourceActivity)):
+            item.price = None
+        elif isinstance(item, ResourceTransport):
+            item.price_low = None
+            item.price_high = None
 
 # --- Countries ---
 
@@ -43,13 +55,16 @@ def list_countries(
     page: int = 1,
     size: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user_optional)
 ):
     query = select(ResourceCountry)
     query = apply_scope_filter(query, ResourceCountry, current_user, scope)
     if search: query = query.where(ResourceCountry.name.ilike(f"%{search}%"))
     query = query.order_by(ResourceCountry.name)
-    return db.scalars(paginate_query(query, page, size)).all()
+    items = db.scalars(paginate_query(query, page, size)).all()
+    if current_user is None:
+        mask_prices_for_guest(items)
+    return items
 
 @router.post("/countries", response_model=CountryOut)
 def create_country(payload: CountryCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -101,7 +116,7 @@ def list_cities(
     page: int = 1,
     size: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user_optional)
 ):
     query = select(ResourceCity)
     query = apply_scope_filter(query, ResourceCity, current_user, scope)
@@ -113,7 +128,10 @@ def list_cities(
         
     query = query.order_by(ResourceCity.country, ResourceCity.name)
     query = paginate_query(query, page, size)
-    return db.scalars(query).all()
+    items = db.scalars(query).all()
+    if current_user is None:
+        mask_prices_for_guest(items)
+    return items
 
 @router.post("/cities", response_model=CityOut)
 def create_city(
@@ -176,7 +194,7 @@ def list_spots(
     page: int = 1,
     size: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user_optional)
 ):
     query = select(ResourceSpot)
     query = apply_scope_filter(query, ResourceSpot, current_user, scope)
@@ -190,7 +208,10 @@ def list_spots(
         query = query.where(ResourceSpot.name.ilike(f"%{search}%"))
         
     query = paginate_query(query, page, size)
-    return db.scalars(query).all()
+    items = db.scalars(query).all()
+    if current_user is None:
+        mask_prices_for_guest(items)
+    return items
 
 @router.post("/spots", response_model=SpotOut)
 def create_spot(payload: SpotCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -251,14 +272,17 @@ def list_hotels(
     page: int = 1,
     size: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user_optional)
 ):
     query = select(ResourceHotel)
     query = apply_scope_filter(query, ResourceHotel, current_user, scope)
     if city_id: query = query.where(ResourceHotel.city_id == city_id)
     if city_name: query = query.join(ResourceCity).where(ResourceCity.name.in_(city_name))
     if search: query = query.where(ResourceHotel.name.ilike(f"%{search}%"))
-    return db.scalars(paginate_query(query, page, size)).all()
+    items = db.scalars(paginate_query(query, page, size)).all()
+    if current_user is None:
+        mask_prices_for_guest(items)
+    return items
 
 @router.post("/hotels", response_model=HotelOut)
 def create_hotel(payload: HotelCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -315,14 +339,17 @@ def list_activities(
     page: int = 1,
     size: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user_optional)
 ):
     query = select(ResourceActivity)
     query = apply_scope_filter(query, ResourceActivity, current_user, scope)
     if city_id: query = query.where(ResourceActivity.city_id == city_id)
     if city_name: query = query.join(ResourceCity).where(ResourceCity.name.in_(city_name))
     if search: query = query.where(ResourceActivity.name.ilike(f"%{search}%"))
-    return db.scalars(paginate_query(query, page, size)).all()
+    items = db.scalars(paginate_query(query, page, size)).all()
+    if current_user is None:
+        mask_prices_for_guest(items)
+    return items
 
 
 @router.post("/activities", response_model=ActivityOut)
@@ -376,13 +403,16 @@ def list_transports(
     page: int = 1,
     size: int = 100,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user_optional)
 ):
     query = select(ResourceTransport)
     query = apply_scope_filter(query, ResourceTransport, current_user, scope)
     if region: query = query.where(ResourceTransport.region == region)
     if search: query = query.where(ResourceTransport.car_model.ilike(f"%{search}%"))
-    return db.scalars(paginate_query(query, page, size)).all()
+    items = db.scalars(paginate_query(query, page, size)).all()
+    if current_user is None:
+        mask_prices_for_guest(items)
+    return items
 
 @router.post("/transports", response_model=TransportOut)
 def create_transport(payload: TransportCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):

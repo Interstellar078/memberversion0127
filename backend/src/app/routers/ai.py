@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
 
-from ..deps import get_db, get_current_user
+from ..deps import get_db, get_current_user_optional
 from ..models import User
 from ..schemas import (
     ItineraryRequest,
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def suggest_hotels(
     payload: SuggestHotelsRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> SuggestHotelsResponse:
     if not payload.destination:
         return SuggestHotelsResponse(hotels=[])
@@ -53,7 +53,7 @@ def suggest_hotels(
 def generate_itinerary(
     payload: ItineraryRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User | None = Depends(get_current_user_optional),
 ) -> ItineraryResponse:
     service = AIAgentService(db, current_user)
     

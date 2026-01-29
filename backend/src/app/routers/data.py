@@ -8,7 +8,7 @@ from sqlalchemy import select, or_, and_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from ..deps import get_db, get_current_user
+from ..deps import get_db, get_current_user, get_current_user_optional
 from ..models import AppData, User
 from ..schemas import DataItem, DataRestoreRequest, DataUpsert
 
@@ -23,6 +23,9 @@ def get_data(
     current_user: User = Depends(get_current_user)
 ) -> DataItem:
     item = None
+    if scope == "private" and not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
 
     if scope == "private":
         # Force fetch private
@@ -156,12 +159,15 @@ def delete_data(
 def list_all(
     scope: Optional[str] = Query("all", pattern="^(all|private|public)$"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user_optional)
 ) -> list[DataItem]:
     query = select(AppData)
+    if scope == "private" and not current_user:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     
     if scope == "private":
-        query = query.where(AppData.owner_id == current_user.username)
+        query = query.where(AppData.owner_id == current_user.username) if current_user else query.where(False)
     elif scope == "public":
         query = query.where(AppData.is_public == True)
     else: # all
@@ -170,7 +176,7 @@ def list_all(
         # Front-end might want to dedupe or show both.
         query = query.where(
             or_(
-                AppData.owner_id == current_user.username,
+                AppData.owner_id == current_user.username if current_user else False,
                 AppData.is_public == True
             )
         )

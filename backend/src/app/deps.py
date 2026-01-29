@@ -11,6 +11,8 @@ from .models import User
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 settings = get_settings()
 
 
@@ -43,4 +45,23 @@ def get_current_user(
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return user
+
+
+
+def get_current_user_optional(
+    token: str | None = Depends(oauth2_scheme_optional),
+    db: Session = Depends(get_db),
+) -> User | None:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        username = payload.get("sub")
+        if not username:
+            return None
+    except JWTError:
+        return None
+
+    user = db.query(User).filter(User.username == username).first()
     return user

@@ -1,35 +1,42 @@
-
 <!DOCTYPE html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>星际云旅行行程定制大师</title>
-    <style>
-      @media print {
-        .no-print {
-          display: none !important;
-        }
-        .print-only {
-          display: block !important;
-        }
-        body {
-          background-color: white;
-        }
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>星际云旅行行程定制大师</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <style>
+    @media print {
+      .no-print {
+        display: none !important;
       }
-      /* Hide number input spinners */
-      input[type=number]::-webkit-inner-spin-button, 
-      input[type=number]::-webkit-outer-spin-button { 
-        -webkit-appearance: none; 
-        margin: 0; 
+
+      .print-only {
+        display: block !important;
       }
-      input[type=number] {
-        -moz-appearance: textfield;
+
+      body {
+        background-color: white;
       }
-    </style>
+    }
+
+    /* Hide number input spinners */
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    input[type=number] {
+      -moz-appearance: textfield;
+    }
+  </style>
 </head>
-  <body class="bg-gray-50 text-gray-900 font-sans antialiased">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+
+<body class="bg-gray-50 text-gray-900 font-sans antialiased">
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+
 </html>

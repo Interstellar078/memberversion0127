@@ -76,10 +76,11 @@ class AIAgentService:
         """Search for hotels in the database by city name."""
         from sqlalchemy import select, or_
         from ..models import ResourceHotel, ResourceCity
-        
+
         user = self.user
-        if not user:
-            return []
+        access_filter = ResourceHotel.is_public == True
+        if user:
+            access_filter = or_(ResourceHotel.is_public == True, ResourceHotel.owner_id == user.username)
 
         # Join Hotel -> City on city_id = id
         stmt = (
@@ -87,20 +88,20 @@ class AIAgentService:
             .join(ResourceCity, ResourceHotel.city_id == ResourceCity.id)
             .where(
                 ResourceCity.name.ilike(f"%{city_name}%"),
-                or_(
-                    ResourceHotel.is_public == True,
-                    ResourceHotel.owner_id == user.username,
-                ),
+                access_filter,
             )
             .order_by(ResourceHotel.price.asc().nulls_last())
         )
         results = self.db.execute(stmt).scalars().all()
-        
+
         filtered = []
         for h in results:
-            price = h.price or 0
-            if price_max and price > price_max:
-                continue
+            if user is None:
+                price = None
+            else:
+                price = h.price or 0
+                if price_max and price > price_max:
+                    continue
             filtered.append(
                 {
                     "name": h.name,
@@ -108,34 +109,34 @@ class AIAgentService:
                     "room_type": h.room_type or "N/A",
                 }
             )
-        
+
         return filtered[:5]
 
     def _fetch_spots(self, city_name: str) -> List[Dict[str, Any]]:
         """Search for scenic spots/attractions in the database by city name."""
         from sqlalchemy import select, or_
         from ..models import ResourceSpot, ResourceCity
-        
+
         user = self.user
-        if not user:
-            return []
+        access_filter = ResourceSpot.is_public == True
+        if user:
+            access_filter = or_(ResourceSpot.is_public == True, ResourceSpot.owner_id == user.username)
 
         stmt = (
             select(ResourceSpot)
             .join(ResourceCity, ResourceSpot.city_id == ResourceCity.id)
             .where(
                 ResourceCity.name.ilike(f"%{city_name}%"),
-                or_(
-                    ResourceSpot.is_public == True,
-                    ResourceSpot.owner_id == user.username,
-                ),
+                access_filter,
             )
             .order_by(ResourceSpot.price.asc().nulls_last())
         )
         results = self.db.execute(stmt).scalars().all()
-        
+
+        if user is None:
+            return [{"name": s.name, "price": None} for s in results][:8]
+
         # Model for Spot: id, city_id, name, price, owner_id, is_public.
-        # No suggested_hours in the model shown (ResourceSpot). It was in previous logs/assumptions.
         return [{"name": s.name, "price": s.price or 0} for s in results][:8]
 
     def _search_hotels_tool(self, city_name: str, price_max: Optional[int] = None) -> str:
