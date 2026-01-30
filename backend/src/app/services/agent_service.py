@@ -2,6 +2,7 @@
 from typing import Dict, Any, Optional, TypedDict, List
 import json
 import logging
+import re
 from sqlalchemy.orm import Session
 from ..config import get_settings
 
@@ -10,7 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from ..schemas import ItineraryItem
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,15 @@ class AgentState(TypedDict):
     spots: List[Dict[str, Any]]
     itinerary: List[Dict[str, Any]]
     error: Optional[str]
+    intent: Optional[str]
+    needs_more_info: Optional[bool]
+class AssessmentResult(BaseModel):
+    need_more_info: bool
+    question: str | None = None
+
+class ItineraryEnvelope(BaseModel):
+    itinerary: list[ItineraryItem]
+
 
 class AIAgentService:
     def __init__(self, db: Session, user: Optional[Any] = None):
@@ -30,6 +40,100 @@ class AIAgentService:
         self.llm = None
         self._configure_llm()
         
+    def _detect_intent(self, prompt: str, current_rows: list[dict]) -> str:
+        if not prompt:
+            return 'create'
+        keywords = ["优化", "调整", "修改", "变更", "改一下", "完善", "补充", "细化"]
+        if any(k in prompt for k in keywords) and current_rows:
+            return 'modify'
+        return 'create'
+
+    def _assess_requirements(self, req: Any) -> Optional[str]:
+        if not self.llm:
+            return "AI 未配置，请稍后再试。"
+        user_prompt = (req.userPrompt or "").strip()
+        context = {
+            "currentDestinations": req.currentDestinations or [],
+            "currentDays": req.currentDays or 0,
+            "currentRowsCount": len(req.currentRows or []),
+            "peopleCount": getattr(req, "peopleCount", None),
+            "roomCount": getattr(req, "roomCount", None),
+            "startDate": getattr(req, "startDate", None),
+            "userPrompt": user_prompt,
+        }
+        system_prompt = f"""你是旅行行程定制助手。请在旅行场景内判断是否可以生成行程。
+只输出JSON：{{"need_more_info": true/false, "question": "..."}}。
+规则：
+- 若缺少生成所需关键信息，need_more_info=true，并只追问最少必要问题。
+- 若输入为非旅行话题，need_more_info=true，question简短引导回旅行需求。
+- 若信息足够，need_more_info=false，question留空。
+当前上下文：{context}"""
+        try:
+            structured = self.llm.with_structured_output(AssessmentResult)
+            result = structured.invoke([SystemMessage(content=system_prompt), HumanMessage(content="请输出JSON")])
+            if isinstance(result, AssessmentResult) and result.need_more_info:
+                return (result.question or "请补充目的地、天数、人数/房间数及偏好。")
+            return None
+        except Exception:
+            try:
+                resp = self.llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content="请输出JSON")])
+                content = getattr(resp, "content", "").strip()
+                if "```" in content:
+                    content = content.split("```")[1].strip()
+                data = json.loads(content)
+                if isinstance(data, dict) and data.get("need_more_info"):
+                    return (data.get("question") or "请补充目的地、天数、人数/房间数及偏好。")
+                return None
+            except Exception:
+                return "请补充目的地、天数、人数/房间数及偏好（如人文/自然/美食等）。"
+
+    def _normalize_itinerary(self, items: list[dict]) -> list[dict]:
+        normalized: list[dict] = []
+        prev_end = None
+        for idx, item in enumerate(items, start=1):
+            if not isinstance(item, dict):
+                continue
+            out = dict(item)
+            day = out.get('day') or idx
+            out['day'] = day
+            route = out.get('route')
+            s_city = out.get('s_city') or out.get('sCity')
+            e_city = out.get('e_city') or out.get('eCity')
+            if route and not (s_city and e_city):
+                parts = re.split(r"[-—>，,]", route)
+                parts = [p.strip() for p in parts if p.strip()]
+                if len(parts) >= 2:
+                    s_city = s_city or parts[0]
+                    e_city = e_city or parts[-1]
+            if not s_city and prev_end:
+                s_city = prev_end
+            elif prev_end and s_city and s_city != prev_end:
+                # keep continuity unless user explicitly sets route start
+                s_city = prev_end
+            if s_city and e_city and not route:
+                route = f"{s_city}-{e_city}"
+            elif route and s_city and e_city:
+                route = f"{s_city}-{e_city}"
+            if s_city:
+                out['s_city'] = s_city
+            if e_city:
+                out['e_city'] = e_city
+            if route:
+                out['route'] = route
+            prev_end = e_city or s_city or prev_end
+
+            # normalize list fields
+            for key in ['ticketName', 'activityName']:
+                val = out.get(key)
+                if isinstance(val, str):
+                    out[key] = [v.strip() for v in re.split(r"[,，、]", val) if v.strip()]
+                elif val is None:
+                    out[key] = []
+            if out.get('transport') is None:
+                out['transport'] = []
+            normalized.append(out)
+        return normalized
+
     def _configure_llm(self):
         provider = self.settings.llm_provider.lower()
         logger.info(f"Configuring LLM. Provider: {provider}")
@@ -150,61 +254,71 @@ class AIAgentService:
     def generate_itinerary_with_react(self, req: Any) -> Dict[str, Any]:
         if not self.llm:
             return {"error": "LLM not configured (LangChain)"}
-            
+
         city = req.currentDestinations[0] if req.currentDestinations else "Unknown"
         days = req.currentDays
         available_countries = ", ".join(req.availableCountries or [])
 
+        def assess_requirements(state: AgentState) -> AgentState:
+            question = self._assess_requirements(req)
+            if question:
+                return {**state, "error": question, "needs_more_info": True}
+            return {**state, "needs_more_info": False}
+
+        def detect_intent(state: AgentState) -> AgentState:
+            if state.get("error") or state.get("needs_more_info"):
+                return state
+            intent = self._detect_intent(req.userPrompt or "", req.currentRows or [])
+            return {**state, "intent": intent}
+
         def fetch_resources(state: AgentState) -> AgentState:
+            if state.get("error") or state.get("needs_more_info"):
+                return state
             hotels = self._fetch_hotels(city)
             spots = self._fetch_spots(city)
             return {**state, "hotels": hotels, "spots": spots}
 
         def generate_plan(state: AgentState) -> AgentState:
+            if state.get("error") or state.get("needs_more_info"):
+                return state
             hotels_json = json.dumps(state["hotels"], ensure_ascii=False)
             spots_json = json.dumps(state["spots"], ensure_ascii=False)
-            system_prompt = f"""你是一位专业的行程规划师。
-你的目标是规划一个前往 {city} 的 {days} 天行程。
-你必须严格遵守以下 JSON 格式返回结果，**所有文本内容（如路线、描述、景点名称）必须使用简体中文**。
-请不要使用 markdown 代码块包裹 JSON，尽量直接返回原始 JSON 字符串。
-如果提供了可用国家列表，请优先在这些国家范围内规划：{available_countries or "未提供"}。
-
-可用酒店资源（JSON 数组，供参考）：{hotels_json}
-可用景点资源（JSON 数组，供参考）：{spots_json}
-
-Required JSON Structure:
-{{{{
-  "itinerary": [
-    {{{{
-      "day": 1,
-      "date": "YYYY-MM-DD",
-      "route": "城市A",
-      "s_city": "城市A",
-      "e_city": "城市A",
-      "transport": ["Car"],
-      "hotelName": "酒店名称",
-      "hotelCost": 100,
-      "ticketName": ["景点A"],
-      "ticketCost": 50,
-      "activityName": [],
-      "activityCost": 0,
-      "description": "详细的中文行程描述..."
-    }}}}
-  ]
-}}}}
-
-Context: User Prompt: "{req.userPrompt}"
+            intent = state.get("intent") or "create"
+            current_rows_json = ""
+            if intent == "modify" and req.currentRows:
+                current_rows_json = json.dumps(req.currentRows, ensure_ascii=False)
+            system_prompt = f"""你是专业行程规划师，输出**仅JSON**且为简体中文。
+目标：生成 {city} 的 {days} 天行程（意图：{intent}）。
+若提供可用国家列表，请优先在其范围内规划：{available_countries or "未提供"}。
+优化目标：行程节奏合理、交通便捷舒适、住宿匹配人数、关注文化/宗教/饮食/体力/季节。
+{"已有行程（JSON，需在此基础上优化）:" + current_rows_json if current_rows_json else ""}
+可用酒店资源：{hotels_json}
+可用景点资源：{spots_json}
+输出结构必须是：{{"itinerary": [ItineraryItem...]}}。
+Context: "{req.userPrompt}"
 """
             try:
-                response = self.llm.invoke(
+                planner = self.llm.with_structured_output(ItineraryEnvelope)
+                response = planner.invoke(
                     [
                         SystemMessage(content=system_prompt),
                         HumanMessage(content="Please generate the itinerary JSON.")
                     ]
                 )
+                if isinstance(response, ItineraryEnvelope):
+                    return {**state, "itinerary": [item.model_dump() for item in response.itinerary], "error": None}
                 output_str = getattr(response, "content", "")
             except Exception as exc:
-                return {**state, "error": str(exc), "itinerary": []}
+                try:
+                    response = self.llm.invoke(
+                        [
+                            SystemMessage(content=system_prompt),
+                            HumanMessage(content="Please generate the itinerary JSON.")
+                        ]
+                    )
+                    output_str = getattr(response, "content", "")
+                except Exception as fallback_exc:
+                    return {**state, "error": str(fallback_exc), "itinerary": []}
 
             clean_json = output_str.strip()
             if "```json" in clean_json:
@@ -224,17 +338,24 @@ Context: User Prompt: "{req.userPrompt}"
             if state.get("error"):
                 return state
             try:
+                normalized = self._normalize_itinerary(state.get("itinerary", []))
                 adapter = TypeAdapter(List[ItineraryItem])
-                validated = adapter.validate_python(state.get("itinerary", []))
+                validated = adapter.validate_python(normalized)
                 return {**state, "itinerary": [item.model_dump() for item in validated]}
             except ValidationError:
                 return {**state, "error": "Validation failed", "itinerary": []}
 
         graph = StateGraph(AgentState)
+        graph.add_node("assess_requirements", assess_requirements)
+        graph.add_node("detect_intent", detect_intent)
         graph.add_node("fetch_resources", fetch_resources)
         graph.add_node("generate_plan", generate_plan)
         graph.add_node("validate_plan", validate_plan)
-        graph.set_entry_point("fetch_resources")
+        graph.set_entry_point("assess_requirements")
+        def route_after_assess(state: AgentState) -> str:
+            return END if state.get("needs_more_info") else "detect_intent"
+        graph.add_conditional_edges("assess_requirements", route_after_assess)
+        graph.add_edge("detect_intent", "fetch_resources")
         graph.add_edge("fetch_resources", "generate_plan")
         graph.add_edge("generate_plan", "validate_plan")
         graph.add_edge("validate_plan", END)
@@ -246,9 +367,12 @@ Context: User Prompt: "{req.userPrompt}"
             "spots": [],
             "itinerary": [],
             "error": None,
+            "intent": None,
+            "needs_more_info": False,
         }
         result = app.invoke(initial_state)
+        final_error = result.get("error")
         return {
             "itinerary": result.get("itinerary", []),
-            "error": result.get("error"),
+            "error": final_error,
         }

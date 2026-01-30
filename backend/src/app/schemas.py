@@ -76,8 +76,11 @@ class ItineraryRequest(BaseModel):
     currentDays: int
     currentRows: list[dict]
     historyTrips: list[dict]
-    availableCountries: list[str]
+    availableCountries: list[str] = []
     userPrompt: str | None = None
+    peopleCount: int | None = None
+    roomCount: int | None = None
+    startDate: str | None = None
 
 
 class ItineraryItem(BaseModel):

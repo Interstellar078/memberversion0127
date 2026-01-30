@@ -10,7 +10,7 @@ import { AuthModal } from './components/AuthModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 import { addDays, generateUUID } from './utils/dateUtils';
-import { suggestHotels, generateFileName, generateComprehensiveItinerary, ItineraryItem, AIPlanningResult } from './services/geminiService';
+import { generateItinerary } from './services/aiService';
 import { AuthService } from './services/authService';
 
 import { StorageService } from './services/storageService';
@@ -868,36 +868,47 @@ export default function App() {
     const handleChatRequest = async (userPrompt: string) => {
         if (!userPrompt.trim()) return;
 
-        // Add User Message
         const userMsg: ChatMessage = { id: generateUUID(), role: 'user', content: userPrompt, timestamp: Date.now() };
         setChatMessages(prev => [...prev, userMsg]);
         setIsGenerating(true);
 
-        const availableCountries: string[] = Array.from(new Set(poiCities.filter(c => isResourceVisible(c)).map(c => c.country)));
-        const availableCities: string[] = poiCities.filter(c => isResourceVisible(c)).map(c => c.name);
+
+        const normalizeList = (value?: string[] | string) => {
+            if (!value) return [] as string[];
+            if (Array.isArray(value)) return value;
+            return value.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
+        };
 
         try {
-            const result = await generateComprehensiveItinerary(
-                settings.destinations,
-                rows.length,
-                rows,
-                savedTrips,
-                availableCountries,
-                availableCities,
-                poiCities,
-                poiSpots,
-                poiHotels,
-                poiActivities,
-                userPrompt
-            );
+            const result: ItineraryResponse = await generateItinerary({
+                currentDestinations: settings.destinations,
+                currentDays: rows.length,
+                currentRows: rows,
+                historyTrips: savedTrips,
+                userPrompt,
+                peopleCount: settings.peopleCount,
+                roomCount: settings.roomCount,
+                startDate: settings.startDate
+            });
 
-            if (result && result.itinerary) {
+            if (result && result.error && (!result.itinerary || result.itinerary.length === 0)) {
+                const aiMsg: ChatMessage = {
+                    id: generateUUID(),
+                    role: 'assistant',
+                    content: result.error,
+                    timestamp: Date.now()
+                };
+                setChatMessages(prev => [...prev, aiMsg]);
+                return;
+            }
+
+            if (result && result.itinerary && result.itinerary.length > 0) {
                 if (result.detectedDestinations && result.detectedDestinations.length > 0) {
                     setSettings(prev => ({ ...prev, destinations: result.detectedDestinations }));
                 }
 
                 const newRows = [...rows];
-                const maxDay = Math.max(...result.itinerary.map(i => i.day));
+                const maxDay = Math.max(...result.itinerary.map(i => i.day || 1));
                 if (maxDay > newRows.length) {
                     for (let i = newRows.length; i < maxDay; i++) {
                         newRows.push(createEmptyRow(i + 1));
@@ -905,23 +916,28 @@ export default function App() {
                 }
 
                 result.itinerary.forEach(item => {
-                    const idx = item.day - 1;
+                    const idx = (item.day || 1) - 1;
                     if (idx >= 0 && idx < newRows.length) {
                         const currentRow = newRows[idx];
                         let routeStr = currentRow.route;
-                        if (item.origin && item.destination) {
-                            routeStr = `${item.origin}-${item.destination}`;
+                        if (item.route) {
+                            routeStr = item.route;
+                        } else if (item.s_city || item.e_city) {
+                            const start = item.s_city || currentRow.route.split('-')[0] || '';
+                            const end = item.e_city || currentRow.route.split('-')[1] || '';
+                            if (start && end) routeStr = `${start}-${end}`;
                         }
-                        const ticketItems: GeneralItem[] = item.ticketName ? item.ticketName.split(/[,，、]/).map(s => ({ id: generateUUID(), name: s.trim(), quantity: settings.peopleCount, price: 0, sourcePublic: false })) : currentRow.ticketDetails;
-                        const activityItems: GeneralItem[] = item.activityName ? item.activityName.split(/[,，、]/).map(s => ({ id: generateUUID(), name: s.trim(), quantity: settings.peopleCount, price: 0, sourcePublic: false })) : currentRow.activityDetails;
+
+                        const ticketItems: GeneralItem[] = normalizeList(item.ticketName).map(s => ({ id: generateUUID(), name: s, quantity: settings.peopleCount, price: 0, sourcePublic: false }));
+                        const activityItems: GeneralItem[] = normalizeList(item.activityName).map(s => ({ id: generateUUID(), name: s, quantity: settings.peopleCount, price: 0, sourcePublic: false }));
                         const hotelItems: HotelItem[] = item.hotelName ? [{ id: generateUUID(), name: item.hotelName, roomType: '标准间', quantity: settings.roomCount, price: 0, sourcePublic: false }] : currentRow.hotelDetails;
 
                         newRows[idx] = {
                             ...currentRow,
                             route: routeStr,
                             hotelDetails: hotelItems,
-                            ticketDetails: ticketItems,
-                            activityDetails: activityItems,
+                            ticketDetails: ticketItems.length > 0 ? ticketItems : currentRow.ticketDetails,
+                            activityDetails: activityItems.length > 0 ? activityItems : currentRow.activityDetails,
                             description: item.description || currentRow.description,
                             manualCostFlags: {
                                 ...currentRow.manualCostFlags,
@@ -935,24 +951,33 @@ export default function App() {
                 });
                 setRows(newRows);
 
-                // Add Success Message
                 const aiMsg: ChatMessage = {
                     id: generateUUID(),
                     role: 'assistant',
-                    content: `已为您更新行程！\n\n**主要变更**：\n- 调整了 ${result.itinerary.length} 天的安排。\n- 若涉及新城市，已自动更新目的地列表。\n\n请检查细节，如果不满意，告诉我具体哪里需要修改。`,
+                    content: `已为您更新行程！
+
+**主要变更**：
+- 调整了 ${result.itinerary.length} 天的安排。
+- 若涉及新城市，已自动更新目的地列表。
+
+请检查细节，如果不满意，告诉我具体哪里需要修改。`,
                     timestamp: Date.now()
                 };
                 setChatMessages(prev => [...prev, aiMsg]);
                 setNotification({ show: true, message: 'AI 规划完成！请点击“刷新价格”以计算最新费用。' });
                 setTimeout(() => setNotification({ show: false, message: '' }), 4000);
             } else {
-                throw new Error("AI 返回了无效的行程数据");
+                const err = result?.error || 'AI 返回了无效的行程数据';
+                throw new Error(err);
             }
         } catch (e: any) {
             console.error("AI Error in App:", e);
             let msg = e.message;
             if (msg === 'Failed to fetch') msg = '网络请求失败，请检查您的网络连接。';
-            const errorMsg: ChatMessage = { id: generateUUID(), role: 'assistant', content: `抱歉，执行任务时遇到了问题：\n${msg}\n\n请稍后再试。`, timestamp: Date.now() };
+            const errorMsg: ChatMessage = { id: generateUUID(), role: 'assistant', content: `抱歉，执行任务时遇到了问题：
+${msg}
+
+请稍后再试。`, timestamp: Date.now() };
             setChatMessages(prev => [...prev, errorMsg]);
         } finally {
             setIsGenerating(false);

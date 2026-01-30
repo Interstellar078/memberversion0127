@@ -20,7 +20,7 @@ def get_data(
     key: str, 
     scope: Optional[str] = Query(None, pattern="^(private|public)$"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user_optional)
 ) -> DataItem:
     item = None
     if scope == "private" and not current_user:
@@ -29,7 +29,7 @@ def get_data(
 
     if scope == "private":
         # Force fetch private
-        item = db.get(AppData, (current_user.username, key))
+        item = db.get(AppData, (current_user.username, key)) if current_user else None
     
     elif scope == "public":
         # Force fetch public
@@ -46,7 +46,7 @@ def get_data(
     
     else:
         # Default Overlay Logic (Priority: Private > System Public > Any Public)
-        item = db.get(AppData, (current_user.username, key))
+        item = db.get(AppData, (current_user.username, key)) if current_user else None
         if not item:
             # Try System Public
             item = db.get(AppData, ("system", key))
@@ -78,7 +78,7 @@ def upsert_data(
     key: str, 
     payload: DataUpsert, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user_optional)
 ) -> DataItem:
     # Logic for Shared Public Data:
     # If a user is an ADMIN and is saving PUBLIC data, we store it under a special 'system' owner_id.
@@ -135,7 +135,7 @@ def delete_data(
     current_user: User = Depends(get_current_user)
 ) -> dict:
     # Only allow deleting OWN data or SYSTEM data if Admin
-    item = db.get(AppData, (current_user.username, key))
+    item = db.get(AppData, (current_user.username, key)) if current_user else None
     if not item:
         # If not found in private, check if it's SYSTEM data and we are ADMIN
         if current_user.role == 'admin':
@@ -167,7 +167,7 @@ def list_all(
 
     
     if scope == "private":
-        query = query.where(AppData.owner_id == current_user.username) if current_user else query.where(False)
+        query = query.where(AppData.owner_id == current_user.username) if current_user else query.where(False) if current_user else query.where(False)
     elif scope == "public":
         query = query.where(AppData.is_public == True)
     else: # all
