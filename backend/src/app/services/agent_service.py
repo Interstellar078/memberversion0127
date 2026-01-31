@@ -3,6 +3,7 @@ from typing import Dict, Any, Optional, TypedDict, List
 import json
 import logging
 import re
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ..config import get_settings
 
@@ -13,6 +14,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from ..schemas import ItineraryItem
+from ..models import AppData, ResourceCity, ResourceHotel, ResourceSpot, ResourceActivity, ResourceTransport
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +26,16 @@ class AgentState(TypedDict):
     error: Optional[str]
     intent: Optional[str]
     needs_more_info: Optional[bool]
+    follow_up: Optional[str]
 class AssessmentResult(BaseModel):
     need_more_info: bool
     question: str | None = None
 
 class ItineraryEnvelope(BaseModel):
     itinerary: list[ItineraryItem]
+
+class MemorySummary(BaseModel):
+    summary: str
 
 
 class AIAgentService:
@@ -39,6 +45,7 @@ class AIAgentService:
         self.settings = get_settings()
         self.llm = None
         self._configure_llm()
+        self._memory_summary = None
         
     def _detect_intent(self, prompt: str, current_rows: list[dict]) -> str:
         if not prompt:
@@ -56,6 +63,8 @@ class AIAgentService:
             "currentDestinations": req.currentDestinations or [],
             "currentDays": req.currentDays or 0,
             "currentRowsCount": len(req.currentRows or []),
+            "memorySummary": self._memory_summary,
+            "chatHistory": (req.chatHistory or [])[-6:],
             "peopleCount": getattr(req, "peopleCount", None),
             "roomCount": getattr(req, "roomCount", None),
             "startDate": getattr(req, "startDate", None),
@@ -64,8 +73,13 @@ class AIAgentService:
         system_prompt = f"""你是旅行行程定制助手。请在旅行场景内判断是否可以生成行程。
 只输出JSON：{{"need_more_info": true/false, "question": "..."}}。
 规则：
-- 若缺少生成所需关键信息，need_more_info=true，并只追问最少必要问题。
-- 若输入为非旅行话题，need_more_info=true，question简短引导回旅行需求。
+- 只问**最少**问题：最多2~3个。
+- **以客户输入为准**：用户已明确提供的内容（如天数/目的地/人数/日期），不要再次确认或追问。
+- **不要重复问表单已有信息**（如出发日期/天数/人数/房间/目的地已给出）。
+- **不要主动询问隐私项**（孩子/年龄/性别/宗教等），除非用户已明确提及。
+- 优先确认缺失项：目的地范围、天数（或出发日期）。
+- 若已具备大致行程要素，先出草案，再在后续细化偏好。
+- 若输入为非旅行话题，need_more_info=true，question一句话引导回旅行需求。
 - 若信息足够，need_more_info=false，question留空。
 当前上下文：{context}"""
         try:
@@ -86,6 +100,163 @@ class AIAgentService:
                 return None
             except Exception:
                 return "请补充目的地、天数、人数/房间数及偏好（如人文/自然/美食等）。"
+
+
+    def _has_minimum_requirements(self, req: Any) -> bool:
+        destinations = req.currentDestinations or []
+        has_dest = bool(destinations)
+        return has_dest
+
+
+    def _infer_country(self, destination: str) -> str | None:
+        if not destination:
+            return None
+        dest = destination.split('(')[0].strip()
+        if '中国' in dest or dest.lower() == 'china':
+            return '中国'
+        try:
+            row = self.db.execute(
+                select(ResourceCity.country).where(ResourceCity.name == dest)
+            ).scalar_one_or_none()
+            if row:
+                return str(row)
+        except Exception:
+            pass
+        return dest if dest else None
+
+    def _recommend_days(self, destination: str) -> int:
+        country = self._infer_country(destination) or destination
+        if not country:
+            return 5
+        east_asia = {'日本','韩国','朝鲜','中国台湾','中国香港','中国澳门','新加坡'}
+        se_asia = {'泰国','越南','马来西亚','印度尼西亚','印尼','菲律宾','柬埔寨','老挝','缅甸','文莱'}
+        europe = {'英国','法国','德国','意大利','西班牙','葡萄牙','瑞士','奥地利','荷兰','比利时','挪威','瑞典','芬兰','丹麦','捷克','希腊','波兰','匈牙利','爱尔兰'}
+        americas = {'美国','加拿大','墨西哥','巴西','阿根廷','智利','秘鲁'}
+        oceania = {'澳大利亚','新西兰'}
+        if country == '中国':
+            return 3
+        if country in east_asia:
+            return 4
+        if country in se_asia:
+            return 6
+        if country in europe or country in americas or country in oceania:
+            return 9
+        return 5
+
+
+    def _backfill_prices(self, itinerary: list[dict], req: Any) -> list[dict]:
+        if not itinerary:
+            return itinerary
+        people = getattr(req, 'peopleCount', None) or 1
+        rooms = getattr(req, 'roomCount', None) or 1
+
+        def price_or_none(value):
+            if value is None:
+                return None
+            try:
+                val = float(value)
+            except Exception:
+                return None
+            return val
+
+        hotel_map = {h.name: price_or_none(h.price) for h in self.db.query(ResourceHotel).all()}
+        spot_map = {s.name: price_or_none(s.price) for s in self.db.query(ResourceSpot).all()}
+        act_map = {a.name: price_or_none(a.price) for a in self.db.query(ResourceActivity).all()}
+        transport_map = {}
+        for t in self.db.query(ResourceTransport).all():
+            if t.service_type:
+                transport_map[t.service_type] = price_or_none(t.price_low)
+            if t.car_model:
+                transport_map[t.car_model] = price_or_none(t.price_low)
+
+        for item in itinerary:
+            # hotel
+            if (item.get('hotelCost') in (None, 0)) and item.get('hotelName'):
+                price = hotel_map.get(item.get('hotelName'))
+                if price is not None:
+                    item['hotelCost'] = price * rooms
+            # tickets
+            if (item.get('ticketCost') in (None, 0)) and item.get('ticketName'):
+                names = item.get('ticketName') or []
+                total = 0
+                for n in names:
+                    p = spot_map.get(n)
+                    if p is not None:
+                        total += p
+                if total > 0:
+                    item['ticketCost'] = total * people
+            # activities
+            if (item.get('activityCost') in (None, 0)) and item.get('activityName'):
+                names = item.get('activityName') or []
+                total = 0
+                for n in names:
+                    p = act_map.get(n)
+                    if p is not None:
+                        total += p
+                if total > 0:
+                    item['activityCost'] = total * people
+            # transport
+            if (item.get('transportCost') in (None, 0)) and item.get('transport'):
+                names = item.get('transport') or []
+                total = 0
+                for n in names:
+                    p = transport_map.get(n)
+                    if p is not None:
+                        total += p
+                if total > 0:
+                    item['transportCost'] = total
+        return itinerary
+
+    def _memory_owner_id(self, conversation_id: str | None) -> str | None:
+        if self.user and self.user.username:
+            return self.user.username
+        if conversation_id:
+            return f"anon:{conversation_id}"
+        return None
+
+    def _memory_key(self, conversation_id: str | None) -> str:
+        return f"ai_memory:{conversation_id or 'default'}"
+
+    def _load_memory(self, conversation_id: str | None) -> str | None:
+        owner_id = self._memory_owner_id(conversation_id)
+        if not owner_id:
+            return None
+        key = self._memory_key(conversation_id)
+        row = self.db.execute(select(AppData).where(AppData.owner_id == owner_id, AppData.key == key)).scalar_one_or_none()
+        if row and isinstance(row.value, dict):
+            return row.value.get('summary')
+        return None
+
+    def _save_memory(self, conversation_id: str | None, summary: str) -> None:
+        owner_id = self._memory_owner_id(conversation_id)
+        if not owner_id:
+            return
+        key = self._memory_key(conversation_id)
+        row = self.db.execute(select(AppData).where(AppData.owner_id == owner_id, AppData.key == key)).scalar_one_or_none()
+        if row:
+            row.value = {"summary": summary}
+        else:
+            self.db.add(AppData(owner_id=owner_id, key=key, value={"summary": summary}, is_public=False))
+        self.db.commit()
+
+    def _summarize_memory(self, existing: str | None, req: Any) -> str | None:
+        if not self.llm:
+            return existing
+        history = req.chatHistory or []
+        tail = history[-8:]
+        prompt = f"""你是旅行顾问，请将对话信息压缩成不超过80字的“已知旅行需求摘要”。
+包含目的地、天数、出行人群/人数、偏好与限制（若有）。
+已知摘要：{existing or '无'}
+最近对话：{tail}
+仅输出JSON：{{"summary":"..."}}。"""
+        try:
+            structured = self.llm.with_structured_output(MemorySummary)
+            res = structured.invoke([SystemMessage(content=prompt), HumanMessage(content="请输出JSON")])
+            if isinstance(res, MemorySummary):
+                return res.summary
+        except Exception:
+            pass
+        return existing
 
     def _normalize_itinerary(self, items: list[dict]) -> list[dict]:
         normalized: list[dict] = []
@@ -256,19 +427,42 @@ class AIAgentService:
             return {"error": "LLM not configured (LangChain)"}
 
         city = req.currentDestinations[0] if req.currentDestinations else "Unknown"
-        days = req.currentDays
+        days = req.currentDays or self._recommend_days(city)
         available_countries = ", ".join(req.availableCountries or [])
+        conversation_id = getattr(req, "conversationId", None)
+        memory_summary = self._load_memory(conversation_id)
+        self._memory_summary = memory_summary
+        logger.info(
+            "AI start: user=%s conv=%s city=%s days=%s prompt_len=%s memory_len=%s",
+            getattr(self.user, "username", None),
+            conversation_id,
+            city,
+            days,
+            len(getattr(req, "userPrompt", None) or ""),
+            len(memory_summary or ""),
+        )
 
         def assess_requirements(state: AgentState) -> AgentState:
             question = self._assess_requirements(req)
             if question:
+                if self._has_minimum_requirements(req):
+                    logger.info("AI draft_with_followup: %s", question)
+                    return {**state, "follow_up": question, "needs_more_info": False}
+                logger.info("AI needs_more_info: %s", question)
                 return {**state, "error": question, "needs_more_info": True}
+            if self._has_minimum_requirements(req) and not req.currentDays:
+                dest = (req.currentDestinations or [''])[0]
+                rec_days = self._recommend_days(dest)
+                follow = f"我先按{rec_days}天给你出一版行程草案，可以吗？如需调整天数/节奏请告诉我。"
+                logger.info("AI draft_default_days: %s", rec_days)
+                return {**state, "follow_up": follow, "needs_more_info": False}
             return {**state, "needs_more_info": False}
 
         def detect_intent(state: AgentState) -> AgentState:
             if state.get("error") or state.get("needs_more_info"):
                 return state
             intent = self._detect_intent(req.userPrompt or "", req.currentRows or [])
+            logger.info("AI intent: %s", intent)
             return {**state, "intent": intent}
 
         def fetch_resources(state: AgentState) -> AgentState:
@@ -276,6 +470,7 @@ class AIAgentService:
                 return state
             hotels = self._fetch_hotels(city)
             spots = self._fetch_spots(city)
+            logger.info("AI resources: hotels=%s spots=%s", len(hotels), len(spots))
             return {**state, "hotels": hotels, "spots": spots}
 
         def generate_plan(state: AgentState) -> AgentState:
@@ -291,10 +486,15 @@ class AIAgentService:
 目标：生成 {city} 的 {days} 天行程（意图：{intent}）。
 若提供可用国家列表，请优先在其范围内规划：{available_countries or "未提供"}。
 优化目标：行程节奏合理、交通便捷舒适、住宿匹配人数、关注文化/宗教/饮食/体力/季节。
+**以用户描述为准**：若用户在对话中明确天数/目的地，优先使用用户给出的参数，即使与表单不一致。
+默认出发/返回地：中国（若用户未提供，且境外行程视为往返中国）。
+若天数缺失，先按推荐天数生成草案，并等待确认。
+价格要求：若用户未提供预算/价格，成本字段（hotelCost/ticketCost/activityCost/transportCost/otherCost）请置为null或0，不要虚构价格。
 {"已有行程（JSON，需在此基础上优化）:" + current_rows_json if current_rows_json else ""}
 可用酒店资源：{hotels_json}
 可用景点资源：{spots_json}
 输出结构必须是：{{"itinerary": [ItineraryItem...]}}。
+不要提供A/B或多套方案，只给**单一最佳方案**。
 Context: "{req.userPrompt}"
 """
             try:
@@ -339,8 +539,10 @@ Context: "{req.userPrompt}"
                 return state
             try:
                 normalized = self._normalize_itinerary(state.get("itinerary", []))
+                normalized = self._backfill_prices(normalized, req)
                 adapter = TypeAdapter(List[ItineraryItem])
                 validated = adapter.validate_python(normalized)
+                logger.info("AI validate: days=%s", len(validated))
                 return {**state, "itinerary": [item.model_dump() for item in validated]}
             except ValidationError:
                 return {**state, "error": "Validation failed", "itinerary": []}
@@ -369,10 +571,17 @@ Context: "{req.userPrompt}"
             "error": None,
             "intent": None,
             "needs_more_info": False,
+            "follow_up": None,
         }
         result = app.invoke(initial_state)
         final_error = result.get("error")
+        logger.info("AI done: error=%s days=%s", final_error, len(result.get("itinerary", []) or []))
+        if conversation_id:
+            new_summary = self._summarize_memory(memory_summary, req)
+            if new_summary:
+                self._save_memory(conversation_id, new_summary)
         return {
             "itinerary": result.get("itinerary", []),
             "error": final_error,
+            "follow_up": result.get("follow_up"),
         }

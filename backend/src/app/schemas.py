@@ -81,6 +81,8 @@ class ItineraryRequest(BaseModel):
     peopleCount: int | None = None
     roomCount: int | None = None
     startDate: str | None = None
+    conversationId: str | None = None
+    chatHistory: list[dict] = []
 
 
 class ItineraryItem(BaseModel):
@@ -107,3 +109,4 @@ class ItineraryResponse(BaseModel):
     itinerary: list[ItineraryItem]
     reasoning: str | None = None
     error: str | None = None
+    followUp: str | None = None

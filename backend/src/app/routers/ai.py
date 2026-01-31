@@ -55,6 +55,16 @@ def generate_itinerary(
     db: Session = Depends(get_db),
     current_user: User | None = Depends(get_current_user_optional),
 ) -> ItineraryResponse:
+    logger.info(
+        "AI itinerary request: user=%s conv=%s days=%s start=%s people=%s rooms=%s prompt_len=%s",
+        getattr(current_user, "username", None),
+        payload.conversationId,
+        payload.currentDays,
+        payload.startDate,
+        payload.peopleCount,
+        payload.roomCount,
+        len(payload.userPrompt or ""),
+    )
     service = AIAgentService(db, current_user)
     
     # Run ReAct Agent

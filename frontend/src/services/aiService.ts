@@ -30,6 +30,8 @@ export interface ItineraryRequest {
   peopleCount?: number | null;
   roomCount?: number | null;
   startDate?: string | null;
+  conversationId?: string | null;
+  chatHistory?: { role: string; content: string }[];
 }
 
 export const generateItinerary = (payload: ItineraryRequest) => {

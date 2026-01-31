@@ -112,6 +112,15 @@ export default function App() {
 
     // Chat State
     const [isChatOpen, setIsChatOpen] = useState(true);
+    const [conversationId] = useState(() => {
+        const key = 'ai_conversation_id';
+        const existing = localStorage.getItem(key);
+        if (existing) return existing;
+        const id = generateUUID();
+        localStorage.setItem(key, id);
+        return id;
+    });
+
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
         { id: 'init', role: 'assistant', content: '您好！我是您的智能行程规划助手。\n您可以告诉我您的目的地、天数和偏好，我会为您生成专业行程。\n或者在现有行程上，让我帮您调整细节。', timestamp: Date.now() }
     ]);
@@ -869,6 +878,9 @@ export default function App() {
         if (!userPrompt.trim()) return;
 
         const userMsg: ChatMessage = { id: generateUUID(), role: 'user', content: userPrompt, timestamp: Date.now() };
+        const historyForAi = [...chatMessages, userMsg]
+            .slice(-10)
+            .map(m => ({ role: m.role, content: m.content }));
         setChatMessages(prev => [...prev, userMsg]);
         setIsGenerating(true);
 
@@ -877,6 +889,33 @@ export default function App() {
             if (!value) return [] as string[];
             if (Array.isArray(value)) return value;
             return value.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
+        };
+
+        const toNumberOrUndefined = (value: any) => {
+            if (value === null || value === undefined || value === '') return undefined;
+            const num = typeof value === 'number' ? value : Number(value);
+            return Number.isFinite(num) ? num : undefined;
+        };
+
+        const deriveDestinations = (items: ItineraryItem[]) => {
+            const cities: string[] = [];
+            items.forEach(item => {
+                const routeCities = item.route ? extractCitiesFromRoute(item.route) : [];
+                if (routeCities.length > 0) {
+                    cities.push(...routeCities);
+                } else {
+                    if (item.s_city) cities.push(item.s_city);
+                    if (item.e_city) cities.push(item.e_city);
+                }
+            });
+            const uniqCities = Array.from(new Set(cities.filter(Boolean)));
+            if (uniqCities.length === 0) return settings.destinations;
+            const countries = uniqCities
+                .map(c => poiCities.find(pc => pc.name === c)?.country)
+                .filter(Boolean) as string[];
+            const uniqCountries = Array.from(new Set(countries));
+            const isForeign = uniqCountries.some(c => c !== '中国');
+            return isForeign ? uniqCountries : uniqCities;
         };
 
         try {
@@ -888,7 +927,9 @@ export default function App() {
                 userPrompt,
                 peopleCount: settings.peopleCount,
                 roomCount: settings.roomCount,
-                startDate: settings.startDate
+                startDate: settings.startDate,
+                conversationId,
+                chatHistory: historyForAi
             });
 
             if (result && result.error && (!result.itinerary || result.itinerary.length === 0)) {
@@ -903,8 +944,9 @@ export default function App() {
             }
 
             if (result && result.itinerary && result.itinerary.length > 0) {
-                if (result.detectedDestinations && result.detectedDestinations.length > 0) {
-                    setSettings(prev => ({ ...prev, destinations: result.detectedDestinations }));
+                const autoDestinations = deriveDestinations(result.itinerary);
+                if (autoDestinations && autoDestinations.length > 0) {
+                    setSettings(prev => ({ ...prev, destinations: autoDestinations }));
                 }
 
                 const newRows = [...rows];
@@ -913,6 +955,8 @@ export default function App() {
                     for (let i = newRows.length; i < maxDay; i++) {
                         newRows.push(createEmptyRow(i + 1));
                     }
+                } else if (maxDay < newRows.length) {
+                    newRows.splice(maxDay);
                 }
 
                 result.itinerary.forEach(item => {
@@ -939,6 +983,11 @@ export default function App() {
                             ticketDetails: ticketItems.length > 0 ? ticketItems : currentRow.ticketDetails,
                             activityDetails: activityItems.length > 0 ? activityItems : currentRow.activityDetails,
                             description: item.description || currentRow.description,
+                            transportCost: toNumberOrUndefined(item.transportCost) ?? currentRow.transportCost,
+                            hotelCost: toNumberOrUndefined(item.hotelCost) ?? currentRow.hotelCost,
+                            ticketCost: toNumberOrUndefined(item.ticketCost) ?? currentRow.ticketCost,
+                            activityCost: toNumberOrUndefined(item.activityCost) ?? currentRow.activityCost,
+                            otherCost: toNumberOrUndefined(item.otherCost) ?? currentRow.otherCost,
                             manualCostFlags: {
                                 ...currentRow.manualCostFlags,
                                 hotel: false,
@@ -965,6 +1014,15 @@ export default function App() {
                 };
                 setChatMessages(prev => [...prev, aiMsg]);
                 setNotification({ show: true, message: 'AI 规划完成！请点击“刷新价格”以计算最新费用。' });
+                if (result.followUp) {
+                    const followMsg: ChatMessage = {
+                        id: generateUUID(),
+                        role: 'assistant',
+                        content: result.followUp,
+                        timestamp: Date.now()
+                    };
+                    setChatMessages(prev => [...prev, followMsg]);
+                }
                 setTimeout(() => setNotification({ show: false, message: '' }), 4000);
             } else {
                 const err = result?.error || 'AI 返回了无效的行程数据';
