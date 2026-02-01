@@ -22,6 +22,7 @@ class AgentState(TypedDict):
     req: Any
     hotels: List[Dict[str, Any]]
     spots: List[Dict[str, Any]]
+    activities: List[Dict[str, Any]]
     itinerary: List[Dict[str, Any]]
     error: Optional[str]
     intent: Optional[str]
@@ -150,6 +151,14 @@ class AIAgentService:
         people = getattr(req, 'peopleCount', None) or 1
         rooms = getattr(req, 'roomCount', None) or 1
 
+        def normalize_name(name: str) -> str:
+            if not name:
+                return ''
+            # remove brackets and punctuation, lowercase
+            name = re.sub(r'[\(（\[【].*?[\)）\]】]', '', name)
+            name = re.sub(r'[^0-9a-zA-Z一-鿿]+', '', name).lower()
+            return name
+
         def price_or_none(value):
             if value is None:
                 return None
@@ -157,52 +166,91 @@ class AIAgentService:
                 val = float(value)
             except Exception:
                 return None
+            if val <= 0:
+                return None
             return val
 
-        hotel_map = {h.name: price_or_none(h.price) for h in self.db.query(ResourceHotel).all()}
-        spot_map = {s.name: price_or_none(s.price) for s in self.db.query(ResourceSpot).all()}
-        act_map = {a.name: price_or_none(a.price) for a in self.db.query(ResourceActivity).all()}
+        hotel_id_map = {str(h.id): price_or_none(h.price) for h in self.db.query(ResourceHotel).all()}
+        hotel_map = {normalize_name(h.name): price_or_none(h.price) for h in self.db.query(ResourceHotel).all()}
+        spot_id_map = {str(s.id): price_or_none(s.price) for s in self.db.query(ResourceSpot).all()}
+        spot_map = {normalize_name(s.name): price_or_none(s.price) for s in self.db.query(ResourceSpot).all()}
+        act_id_map = {str(a.id): price_or_none(a.price) for a in self.db.query(ResourceActivity).all()}
+        act_map = {normalize_name(a.name): price_or_none(a.price) for a in self.db.query(ResourceActivity).all()}
+        transport_id_map = {str(t.id): price_or_none(t.price_low) for t in self.db.query(ResourceTransport).all()}
         transport_map = {}
         for t in self.db.query(ResourceTransport).all():
             if t.service_type:
-                transport_map[t.service_type] = price_or_none(t.price_low)
+                transport_map[normalize_name(t.service_type)] = price_or_none(t.price_low)
             if t.car_model:
-                transport_map[t.car_model] = price_or_none(t.price_low)
+                transport_map[normalize_name(t.car_model)] = price_or_none(t.price_low)
+
+        def lookup_price(name: str, table: dict) -> float | None:
+            key = normalize_name(name)
+            if not key:
+                return None
+            if key in table:
+                return table[key]
+            # fuzzy contains fallback
+            for k, v in table.items():
+                if k and (key in k or k in key):
+                    return v
+            return None
 
         for item in itinerary:
             # hotel
-            if (item.get('hotelCost') in (None, 0)) and item.get('hotelName'):
-                price = hotel_map.get(item.get('hotelName'))
+            if item.get('hotelCost') in (None, 0):
+                hotel_id = item.get('hotelId')
+                price = hotel_id_map.get(str(hotel_id)) if hotel_id else None
+                if price is None and item.get('hotelName'):
+                    price = lookup_price(item.get('hotelName'), hotel_map)
                 if price is not None:
                     item['hotelCost'] = price * rooms
             # tickets
-            if (item.get('ticketCost') in (None, 0)) and item.get('ticketName'):
-                names = item.get('ticketName') or []
+            if item.get('ticketCost') in (None, 0):
                 total = 0
-                for n in names:
-                    p = spot_map.get(n)
+                ids = item.get('ticketIds') or []
+                for tid in ids:
+                    p = spot_id_map.get(str(tid))
                     if p is not None:
                         total += p
+                if total == 0 and item.get('ticketName'):
+                    names = item.get('ticketName') or []
+                    for n in names:
+                        p = lookup_price(n, spot_map)
+                        if p is not None:
+                            total += p
                 if total > 0:
                     item['ticketCost'] = total * people
             # activities
-            if (item.get('activityCost') in (None, 0)) and item.get('activityName'):
-                names = item.get('activityName') or []
+            if item.get('activityCost') in (None, 0):
                 total = 0
-                for n in names:
-                    p = act_map.get(n)
+                ids = item.get('activityIds') or []
+                for aid in ids:
+                    p = act_id_map.get(str(aid))
                     if p is not None:
                         total += p
+                if total == 0 and item.get('activityName'):
+                    names = item.get('activityName') or []
+                    for n in names:
+                        p = lookup_price(n, act_map)
+                        if p is not None:
+                            total += p
                 if total > 0:
                     item['activityCost'] = total * people
             # transport
-            if (item.get('transportCost') in (None, 0)) and item.get('transport'):
-                names = item.get('transport') or []
+            if item.get('transportCost') in (None, 0):
                 total = 0
-                for n in names:
-                    p = transport_map.get(n)
+                ids = item.get('transportIds') or []
+                for tid in ids:
+                    p = transport_id_map.get(str(tid))
                     if p is not None:
                         total += p
+                if total == 0 and item.get('transport'):
+                    names = item.get('transport') or []
+                    for n in names:
+                        p = lookup_price(n, transport_map)
+                        if p is not None:
+                            total += p
                 if total > 0:
                     item['transportCost'] = total
         return itinerary
@@ -379,6 +427,7 @@ class AIAgentService:
                     continue
             filtered.append(
                 {
+                    "id": h.id,
                     "name": h.name,
                     "price": price,
                     "room_type": h.room_type or "N/A",
@@ -409,10 +458,37 @@ class AIAgentService:
         results = self.db.execute(stmt).scalars().all()
 
         if user is None:
-            return [{"name": s.name, "price": None} for s in results][:8]
+            return [{"id": s.id, "name": s.name, "price": None} for s in results][:8]
 
         # Model for Spot: id, city_id, name, price, owner_id, is_public.
-        return [{"name": s.name, "price": s.price or 0} for s in results][:8]
+        return [{"id": s.id, "name": s.name, "price": s.price or 0} for s in results][:8]
+
+
+    def _fetch_activities(self, city_name: str) -> List[Dict[str, Any]]:
+        """Search for activities in the database by city name."""
+        from sqlalchemy import select, or_
+        from ..models import ResourceActivity, ResourceCity
+
+        user = self.user
+        access_filter = ResourceActivity.is_public == True
+        if user:
+            access_filter = or_(ResourceActivity.is_public == True, ResourceActivity.owner_id == user.username)
+
+        stmt = (
+            select(ResourceActivity)
+            .join(ResourceCity, ResourceActivity.city_id == ResourceCity.id)
+            .where(
+                ResourceCity.name.ilike(f"%{city_name}%"),
+                access_filter,
+            )
+            .order_by(ResourceActivity.price.asc().nulls_last())
+        )
+        results = self.db.execute(stmt).scalars().all()
+
+        if user is None:
+            return [{"id": a.id, "name": a.name, "price": None} for a in results][:8]
+
+        return [{"id": a.id, "name": a.name, "price": a.price or 0} for a in results][:8]
 
     def _search_hotels_tool(self, city_name: str, price_max: Optional[int] = None) -> str:
         hotels = self._fetch_hotels(city_name, price_max)
@@ -470,14 +546,16 @@ class AIAgentService:
                 return state
             hotels = self._fetch_hotels(city)
             spots = self._fetch_spots(city)
-            logger.info("AI resources: hotels=%s spots=%s", len(hotels), len(spots))
-            return {**state, "hotels": hotels, "spots": spots}
+            activities = self._fetch_activities(city)
+            logger.info("AI resources: hotels=%s spots=%s activities=%s", len(hotels), len(spots), len(activities))
+            return {**state, "hotels": hotels, "spots": spots, "activities": activities}
 
         def generate_plan(state: AgentState) -> AgentState:
             if state.get("error") or state.get("needs_more_info"):
                 return state
             hotels_json = json.dumps(state["hotels"], ensure_ascii=False)
             spots_json = json.dumps(state["spots"], ensure_ascii=False)
+            activities_json = json.dumps(state.get("activities", []), ensure_ascii=False)
             intent = state.get("intent") or "create"
             current_rows_json = ""
             if intent == "modify" and req.currentRows:
@@ -493,7 +571,9 @@ class AIAgentService:
 {"已有行程（JSON，需在此基础上优化）:" + current_rows_json if current_rows_json else ""}
 可用酒店资源：{hotels_json}
 可用景点资源：{spots_json}
+可用活动资源：{activities_json}
 输出结构必须是：{{"itinerary": [ItineraryItem...]}}。
+请尽量为酒店/门票/活动写入对应ID字段（hotelId/ticketIds/activityIds）。
 不要提供A/B或多套方案，只给**单一最佳方案**。
 Context: "{req.userPrompt}"
 """
@@ -567,6 +647,7 @@ Context: "{req.userPrompt}"
             "req": req,
             "hotels": [],
             "spots": [],
+            "activities": [],
             "itinerary": [],
             "error": None,
             "intent": None,

@@ -93,6 +93,7 @@ class ItineraryItem(BaseModel):
     e_city: str | None = None
     transport: list[str] = Field(default_factory=list)
     hotelName: str | None = None
+    hotelId: str | None = None
     hotelCost: float | int | None = None
     ticketName: list[str] = Field(default_factory=list)
     ticketCost: float | int | None = None

@@ -234,12 +234,7 @@ export default function App() {
             // --- Phase 2: Core Resources (light) ---
             // Keep initial load light; heavy resources are loaded on demand.
             try {
-                const [cars, cities] = await Promise.all([
-                    StorageService.getCars(),
-                    StorageService.getCities()
-                ]);
-
-                setCarDB(cars);
+                const cities = await StorageService.getCities();
                 setPoiCities(cities);
             } catch (e) {
                 console.error("Failed to load core resources", e);
@@ -317,16 +312,8 @@ export default function App() {
         setIsRefreshingResources(true);
         setCloudStatus('syncing');
         try {
-            const [cars, cities, others, files] = await Promise.all([
-                StorageService.getCars(),
-                StorageService.getCities(),
-                StorageService.getOthers(),
-                StorageService.getFiles()
-            ]);
-            setCarDB(cars);
+            const cities = await StorageService.getCities();
             setPoiCities(cities);
-            setPoiOthers(others);
-            setCountryFiles(files);
             setCloudStatus('synced');
             setIsResourceOpen(true);
         } catch (error) {

@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, User } from '../types';
 import { generateUUID } from '../utils/dateUtils';
 import { resourceApi } from '../services/resourceApi';
+import { StorageService } from '../services/storageService';
 
 interface ResourceDatabaseProps {
     isOpen: boolean;
@@ -69,11 +70,25 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
         isPublic: item.isPublic ?? (item as any).is_public
     });
 
-    const cityResourceCache = useRef(new Map<string, { spots: PoiSpot[]; hotels: PoiHotel[]; activities: PoiActivity[] }>());
-    const cityResourceLoading = useRef(new Set<string>());
+    const [resourceSearchTerm, setResourceSearchTerm] = useState('');
+    const [resourceSearchLoading, setResourceSearchLoading] = useState(false);
+    const loadedCarRegions = useRef(new Set<string>());
+    const loadingCarRegions = useRef(new Set<string>());
+    const loadedOtherCountries = useRef(new Set<string>());
+    const loadingOtherCountries = useRef(new Set<string>());
 
     const mergeByCity = <T extends { cityId?: string }>(items: T[], cityId: string, nextItems: T[]) => {
         const kept = items.filter((i) => i.cityId !== cityId);
+        return [...kept, ...nextItems];
+    };
+
+    const mergeByRegion = <T extends { region?: string }>(items: T[], region: string, nextItems: T[]) => {
+        const kept = items.filter((i) => (i as any).region !== region);
+        return [...kept, ...nextItems];
+    };
+
+    const mergeByCountry = <T extends { country?: string }>(items: T[], country: string, nextItems: T[]) => {
+        const kept = items.filter((i) => (i as any).country !== country);
         return [...kept, ...nextItems];
     };
 
@@ -142,10 +157,11 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     }, [isOpen, visibleCountries, selectedCountry]);
 
     useEffect(() => {
-        // When country changes, default to 'transport' or first city if desired.
-        // Keeping 'transport' as a safe default.
-        setActiveSection('transport');
-    }, [selectedCountry]);
+        if (!selectedCountry) return;
+        const citiesForCountry = poiCities.filter(c => c.country === selectedCountry && isVisible(c));
+        const firstCity = citiesForCountry[0]?.id;
+        setActiveSection(firstCity || 'transport');
+    }, [selectedCountry, poiCities, currentUser]);
 
     // Derived filtered lists
     const currentCars = carDB.filter(c => c.region === selectedCountry && isVisible(c));
@@ -161,36 +177,111 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
 
     useEffect(() => {
         if (!isOpen || !currentCityId) return;
-        if (cityResourceCache.current.has(currentCityId) || cityResourceLoading.current.has(currentCityId)) return;
-
-        cityResourceLoading.current.add(currentCityId);
-        Promise.all([
-            resourceApi.listSpots({ city_id: currentCityId, page: 1, size: 1000 }),
-            resourceApi.listHotels({ city_id: currentCityId, page: 1, size: 1000 }),
-            resourceApi.listActivities({ city_id: currentCityId, page: 1, size: 1000 })
-        ])
-            .then(([spots, hotels, activities]) => {
-                const normSpots = (spots || []).map(normalizeOwner);
-                const normHotels = (hotels || []).map(normalizeOwner);
-                const normActivities = (activities || []).map(normalizeOwner);
-                cityResourceCache.current.set(currentCityId, {
-                    spots: normSpots,
-                    hotels: normHotels,
-                    activities: normActivities
-                });
-                onUpdatePoiSpots((prev) => mergeByCity(prev, currentCityId, normSpots));
-                onUpdatePoiHotels((prev) => mergeByCity(prev, currentCityId, normHotels));
-                onUpdatePoiActivities((prev) => mergeByCity(prev, currentCityId, normActivities));
-            })
-            .catch((e) => console.error('Failed to load city resources', e))
-            .finally(() => {
-                cityResourceLoading.current.delete(currentCityId);
-            });
+        setResourceSearchTerm('');
     }, [isOpen, currentCityId]);
+
+
+    // load transports on demand when transport tab is opened
+    useEffect(() => {
+        if (!isOpen || !selectedCountry) return;
+        if (activeSection != 'transport') return;
+        if (loadedCarRegions.current.has(selectedCountry) || loadingCarRegions.current.has(selectedCountry)) return;
+        loadingCarRegions.current.add(selectedCountry);
+        resourceApi.listTransports({ region: selectedCountry, page: 1, size: 1000 })
+            .then((cars) => {
+                const norm = (cars || []).map(normalizeOwner);
+                onUpdateCarDB((prev) => mergeByRegion(prev, selectedCountry, norm));
+                loadedCarRegions.current.add(selectedCountry);
+            })
+            .catch((e) => console.error('Failed to load transport config', e))
+            .finally(() => {
+                loadingCarRegions.current.delete(selectedCountry);
+            });
+    }, [isOpen, activeSection, selectedCountry]);
+
+    // load other services/files on demand when other tab is opened
+    useEffect(() => {
+        if (!isOpen || !selectedCountry) return;
+        if (activeSection != 'other') return;
+        if (loadedOtherCountries.current.has(selectedCountry) || loadingOtherCountries.current.has(selectedCountry)) return;
+        loadingOtherCountries.current.add(selectedCountry);
+        Promise.all([StorageService.getOthers(), StorageService.getFiles()])
+            .then(([others, files]) => {
+                const normOthers = (others || []).map(normalizeOwner).filter((o) => o.country === selectedCountry);
+                const normFiles = (files || []).map(normalizeOwner).filter((f) => f.country === selectedCountry);
+                if (onUpdatePoiOthers) onUpdatePoiOthers((prev) => mergeByCountry(prev, selectedCountry, normOthers));
+                onUpdateCountryFiles((prev) => mergeByCountry(prev, selectedCountry, normFiles));
+                loadedOtherCountries.current.add(selectedCountry);
+            })
+            .catch((e) => console.error('Failed to load other services', e))
+            .finally(() => {
+                loadingOtherCountries.current.delete(selectedCountry);
+            });
+    }, [isOpen, activeSection, selectedCountry]);
+    const runResourceSearch = async (termOverride?: string) => {
+        if (!currentCityId) return;
+        const term = (termOverride ?? resourceSearchTerm).trim();
+        if (!term) {
+            setResourceSearchLoading(true);
+            try {
+                if (poiTab === 'spot') {
+                    const spots = await resourceApi.listSpots({ city_id: currentCityId, page: 1, size: 50 });
+                    const norm = (spots || []).map(normalizeOwner);
+                    onUpdatePoiSpots((prev) => mergeByCity(prev, currentCityId, norm));
+                } else if (poiTab === 'hotel') {
+                    const hotels = await resourceApi.listHotels({ city_id: currentCityId, page: 1, size: 50 });
+                    const norm = (hotels || []).map(normalizeOwner);
+                    onUpdatePoiHotels((prev) => mergeByCity(prev, currentCityId, norm));
+                } else {
+                    const activities = await resourceApi.listActivities({ city_id: currentCityId, page: 1, size: 50 });
+                    const norm = (activities || []).map(normalizeOwner);
+                    onUpdatePoiActivities((prev) => mergeByCity(prev, currentCityId, norm));
+                }
+            } catch (e) {
+                console.error('Failed to load city resources', e);
+            } finally {
+                setResourceSearchLoading(false);
+            }
+            return;
+        }
+        setResourceSearchLoading(true);
+        try {
+            if (poiTab === 'spot') {
+                const spots = await resourceApi.listSpots({ city_id: currentCityId, search: term, page: 1, size: 50 });
+                const norm = (spots || []).map(normalizeOwner);
+                onUpdatePoiSpots((prev) => mergeByCity(prev, currentCityId, norm));
+            } else if (poiTab === 'hotel') {
+                const hotels = await resourceApi.listHotels({ city_id: currentCityId, search: term, page: 1, size: 50 });
+                const norm = (hotels || []).map(normalizeOwner);
+                onUpdatePoiHotels((prev) => mergeByCity(prev, currentCityId, norm));
+            } else {
+                const activities = await resourceApi.listActivities({ city_id: currentCityId, search: term, page: 1, size: 50 });
+                const norm = (activities || []).map(normalizeOwner);
+                onUpdatePoiActivities((prev) => mergeByCity(prev, currentCityId, norm));
+            }
+        } catch (e) {
+            console.error('Failed to search city resources', e);
+        } finally {
+            setResourceSearchLoading(false);
+        }
+    };
+
+
+    useEffect(() => {
+        if (!currentCityId) return;
+        if (!resourceSearchTerm.trim()) {
+            runResourceSearch('');
+            return;
+        }
+        runResourceSearch();
+    }, [poiTab, currentCityId]);
+
 
     const currentSpots = poiSpots.filter(s => s.cityId === currentCityId && isVisible(s));
     const currentActivities = poiActivities.filter(a => a.cityId === currentCityId && isVisible(a));
     const currentHotels = poiHotels.filter(h => h.cityId === currentCityId && isVisible(h));
+    const hasAutoResults = poiTab === 'spot' ? currentSpots.length > 0 : poiTab === 'hotel' ? currentHotels.length > 0 : currentActivities.length > 0;
+    const shouldShowResults = resourceSearchTerm.trim().length > 0 || hasAutoResults;
 
     // Helper to toggle Public status (Super Admin only)
     const togglePublicLocal = <T extends { id: string, isPublic?: boolean }>(items: T[], updater: (items: T[]) => void, item: T) => {
@@ -456,15 +547,19 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                         <div className="flex items-center gap-3 overflow-hidden">
                                             <MapPin size={16} className={`shrink-0 ${activeSection === city.id ? 'text-blue-600' : 'text-gray-400'}`} />
                                             {/* Inline Edit for City Name */}
-                                            <input
-                                                onKeyDown={handleEnterKey}
-                                                disabled={!canEdit(city)}
-                                                type="text"
-                                                className={`bg-transparent border-none p-0 text-sm cursor-pointer focus:ring-0 w-full truncate ${activeSection === city.id ? 'font-medium text-blue-700' : 'text-gray-600'}`}
-                                                value={city.name}
-                                                onChange={(e) => updateItemRemote<PoiCity>('city', poiCities, onUpdatePoiCities, city.id, { name: e.target.value })}
-                                                onClick={(e) => e.stopPropagation()} // Allow editing without triggering selection again
-                                            />
+                                            {canEdit(city) ? (
+                                                <input
+                                                    onKeyDown={handleEnterKey}
+                                                    type="text"
+                                                    className={`bg-transparent border-none p-0 text-sm cursor-pointer focus:ring-0 w-full truncate ${activeSection === city.id ? 'font-medium text-blue-700' : 'text-gray-600'}`}
+                                                    value={city.name}
+                                                    onChange={(e) => updateItemRemote<PoiCity>('city', poiCities, onUpdatePoiCities, city.id, { name: e.target.value })}
+                                                    onFocus={() => setActiveSection(city.id)}
+                                                    onClick={(e) => e.stopPropagation()} // Allow editing without triggering selection again
+                                                />
+                                            ) : (
+                                                <span className={`text-sm truncate ${activeSection === city.id ? 'font-medium text-blue-700' : 'text-gray-600'}`}>{city.name}</span>
+                                            )}
                                         </div>
                                         {canEdit(city) && <button onClick={(e) => { e.stopPropagation(); deleteItemRemote('city', poiCities, onUpdatePoiCities, city.id, '城市'); }} className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-opacity"><Trash2 size={12} /></button>}
                                     </div>
@@ -650,6 +745,27 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                 </button>
                                             ))}
                                         </div>
+                                        <div className="px-6 py-3 border-b border-gray-200 bg-white flex items-center gap-2">
+                                            <div className="relative flex-1">
+                                                <Search size={16} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
+                                                <input
+                                                    className="w-full pl-8 pr-3 py-2 text-sm border border-gray-200 rounded-md"
+                                                    placeholder="输入关键词搜索当前城市资源（按回车搜索）"
+                                                    value={resourceSearchTerm}
+                                                    onChange={(e) => setResourceSearchTerm(e.target.value)}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter') runResourceSearch();
+                                                    }}
+                                                />
+                                            </div>
+                                            <button
+                                                className="px-3 py-2 text-sm rounded-md border border-gray-200 hover:bg-gray-50"
+                                                onClick={runResourceSearch}
+                                                disabled={resourceSearchLoading}
+                                            >
+                                                {resourceSearchLoading ? '搜索中...' : '搜索'}
+                                            </button>
+                                        </div>
 
                                         <div className="flex-1 p-6 overflow-auto">
                                             <div className="bg-white border rounded-lg shadow-sm overflow-hidden">
@@ -665,7 +781,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                             <th className="w-12"></th>
                                                         </tr></thead>
                                                         <tbody className="divide-y divide-gray-200">
-                                                            {(poiTab === 'spot' ? currentSpots : poiTab === 'hotel' ? currentHotels : currentActivities).map(item => (
+                                                            {(shouldShowResults ? (poiTab === 'spot' ? currentSpots : poiTab === 'hotel' ? currentHotels : currentActivities) : []).map(item => (
                                                                 <tr key={item.id} className="hover:bg-gray-50/50 transition-colors">
                                                                     <td className="px-4 py-2"><input onKeyDown={handleEnterKey} disabled={!canEdit(item)} className="w-full text-sm border-gray-300 rounded disabled:bg-transparent disabled:border-none focus:ring-1 focus:ring-blue-500" value={item.name} onChange={(e) => {
                                                                         if (poiTab === 'spot') updateItemRemote<PoiSpot>('spot', poiSpots, onUpdatePoiSpots, item.id, { name: e.target.value });
@@ -725,6 +841,9 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                         </tbody>
                                                     </table>
                                                 </div>
+                                                {!shouldShowResults && (
+                                                    <div className="px-6 py-4 text-sm text-gray-400">请输入关键词搜索当前城市资源。</div>
+                                                )}
                                                 <button onClick={() => {
                                                     const base = { cityId: currentCityId, name: '', price: 0 };
                                                     if (poiTab === 'spot') handleCreateRemote('spot', { ...base, isPublic: isSuperAdmin }, onUpdatePoiSpots, poiSpots);
