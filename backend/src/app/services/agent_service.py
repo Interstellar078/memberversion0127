@@ -73,13 +73,12 @@ class AIAgentService:
         }
         system_prompt = f"""你是旅行行程定制助手。请在旅行场景内判断是否可以生成行程。
 只输出JSON：{{"need_more_info": true/false, "question": "..."}}。
-规则：
-- 只问**最少**问题：最多2~3个。
-- **以客户输入为准**：用户已明确提供的内容（如天数/目的地/人数/日期），不要再次确认或追问。
-- **不要重复问表单已有信息**（如出发日期/天数/人数/房间/目的地已给出）。
-- **不要主动询问隐私项**（孩子/年龄/性别/宗教等），除非用户已明确提及。
-- 优先确认缺失项：目的地范围、天数（或出发日期）。
-- 若已具备大致行程要素，先出草案，再在后续细化偏好。
+规则（务必严格）：
+- **最多只问1个问题**，且必须是一句话。
+- **只有在“目的地缺失”时才提问**，问题只问目的地（城市/国家）。
+- 目的地已存在时，**不要再问天数/日期/人数/房间/预算/偏好**，直接生成草案。
+- 表单已有信息（目的地/天数/日期/人数/房间）不得重复询问。
+- **不要主动询问隐私项**（孩子/年龄/性别/宗教等），除非用户明确提及。
 - 若输入为非旅行话题，need_more_info=true，question一句话引导回旅行需求。
 - 若信息足够，need_more_info=false，question留空。
 当前上下文：{context}"""
@@ -87,7 +86,7 @@ class AIAgentService:
             structured = self.llm.with_structured_output(AssessmentResult)
             result = structured.invoke([SystemMessage(content=system_prompt), HumanMessage(content="请输出JSON")])
             if isinstance(result, AssessmentResult) and result.need_more_info:
-                return (result.question or "请补充目的地、天数、人数/房间数及偏好。")
+                return (result.question or "请告诉我目的地城市或国家。")
             return None
         except Exception:
             try:
@@ -97,10 +96,10 @@ class AIAgentService:
                     content = content.split("```")[1].strip()
                 data = json.loads(content)
                 if isinstance(data, dict) and data.get("need_more_info"):
-                    return (data.get("question") or "请补充目的地、天数、人数/房间数及偏好。")
+                    return (data.get("question") or "请告诉我目的地城市或国家。")
                 return None
             except Exception:
-                return "请补充目的地、天数、人数/房间数及偏好（如人文/自然/美食等）。"
+                return "请告诉我目的地城市或国家。"
 
 
     def _has_minimum_requirements(self, req: Any) -> bool:
