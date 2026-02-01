@@ -42,7 +42,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
     setCurrentUser
 }) => {
     return (
-        <div className="bg-white border-b border-gray-200 px-6 py-3 flex justify-between items-center shadow-sm z-40 shrink-0 no-print">
+        <div className="bg-white border-b border-gray-200 px-6 py-3 flex justify-between items-center shadow-sm z-[60] shrink-0 no-print">
             <div className="flex items-center gap-4">
                 <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent flex items-center gap-2">
                     <Rocket size={24} className="text-blue-600" /> 星际云旅行

@@ -70,22 +70,27 @@ export const StorageService = {
   },
 
   async getCars(): Promise<CarCostEntry[]> {
+    if (!currentUser) return [];
     const items = await resourceApi.listTransports({ page: 1, size: 5000 });
     return (items || []).map(mapOwner) as CarCostEntry[];
   },
   async getCities(): Promise<PoiCity[]> {
+    if (!currentUser) return [];
     const items = await resourceApi.listCities({ page: 1, size: 5000 });
     return (items || []).map(mapOwner) as PoiCity[];
   },
   async getSpots(): Promise<PoiSpot[]> {
+    if (!currentUser) return [];
     const items = await resourceApi.listSpots({ page: 1, size: 5000 });
     return (items || []).map(mapOwner) as PoiSpot[];
   },
   async getHotels(): Promise<PoiHotel[]> {
+    if (!currentUser) return [];
     const items = await resourceApi.listHotels({ page: 1, size: 5000 });
     return (items || []).map(mapOwner) as PoiHotel[];
   },
   async getActivities(): Promise<PoiActivity[]> {
+    if (!currentUser) return [];
     const items = await resourceApi.listActivities({ page: 1, size: 5000 });
     return (items || []).map(mapOwner) as PoiActivity[];
   },

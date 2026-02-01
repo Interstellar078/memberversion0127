@@ -14,6 +14,10 @@ interface AIChatSidebarProps {
     isGenerating: boolean;
     isOpen: boolean;
     onToggle: () => void;
+    width?: number;
+    setWidth?: (width: number) => void;
+    mode?: 'docked' | 'overlay';
+    setMode?: (mode: 'docked' | 'overlay') => void;
 }
 
 export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
@@ -21,10 +25,16 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
     onSendMessage,
     isGenerating,
     isOpen,
-    onToggle
+    onToggle,
+    width = 400,
+    setWidth,
+    mode = 'docked',
+    setMode
 }) => {
     const [input, setInput] = useState('');
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const [isResizing, setIsResizing] = useState(false);
+    const sidebarRef = useRef<HTMLDivElement>(null);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -33,6 +43,34 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
     useEffect(() => {
         scrollToBottom();
     }, [messages]);
+
+    useEffect(() => {
+        const handleMouseMove = (e: MouseEvent) => {
+            if (!isResizing || !setWidth) return;
+            const newWidth = window.innerWidth - e.clientX;
+            // Limit width between 300px and 800px (or 50% of screen)
+            const maxWidth = Math.min(800, window.innerWidth * 0.8);
+            if (newWidth >= 300 && newWidth <= maxWidth) {
+                setWidth(newWidth);
+            }
+        };
+
+        const handleMouseUp = () => {
+            setIsResizing(false);
+            document.body.style.cursor = 'default';
+        };
+
+        if (isResizing) {
+            document.addEventListener('mousemove', handleMouseMove);
+            document.addEventListener('mouseup', handleMouseUp);
+            document.body.style.cursor = 'ew-resize';
+        }
+
+        return () => {
+            document.removeEventListener('mousemove', handleMouseMove);
+            document.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [isResizing, setWidth]);
 
     const handleSend = () => {
         if (!input.trim() || isGenerating) return;
@@ -48,19 +86,30 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
     };
 
     return (
-        // Responsive classes:
-        // Mobile: fixed inset-0 (full screen) or fixed right-0 w-full sm:w-96
-        // Desktop: absolute right-0 top-0 bottom-0 w-[400px]
-        // We'll use a combined approach controlled by isOpen
         <div
-            className={`fixed inset-y-0 right-0 z-50 bg-white border-l border-gray-200 shadow-2xl transform transition-transform duration-300 ease-in-out flex flex-col
+            ref={sidebarRef}
+            className={`fixed inset-y-0 right-0 z-50 border-l border-white/20 shadow-2xl transform transition-transform duration-300 ease-in-out flex flex-col backdrop-blur-md
         ${isOpen ? 'translate-x-0' : 'translate-x-full'}
-        w-full sm:w-[400px]
-        lg:absolute lg:top-0 lg:bottom-0 lg:h-full lg:shadow-none
+        ${mode === 'overlay' ? 'bg-white/95 shadow-2xl' : 'bg-white border-l-gray-200'}
+        lg:shadow-none
         `}
+            style={{ width: isOpen && window.innerWidth >= 640 ? width : '100%' }}
         >
-            {/* Minimalist Header */}
-            <div className="h-14 px-4 border-b border-gray-100 flex justify-between items-center bg-white shrink-0">
+            {/* Resize Handle */}
+            {isOpen && setWidth && (
+                <div
+                    className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-blue-400/50 z-50 transition-colors group"
+                    onMouseDown={(e) => {
+                        e.preventDefault();
+                        setIsResizing(true);
+                    }}
+                >
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-gray-300 rounded-full group-hover:bg-blue-400 transition-colors"></div>
+                </div>
+            )}
+
+            {/* Header */}
+            <div className="h-14 px-4 border-b border-gray-100 flex justify-between items-center bg-white/50 backdrop-blur-sm shrink-0">
                 <div className="flex items-center gap-2">
                     <div className="w-8 h-8 rounded-full bg-purple-50 flex items-center justify-center text-purple-600">
                         <Sparkles size={16} />
@@ -70,13 +119,24 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
                         <p className="text-[10px] text-gray-400">基于详细行程上下文</p>
                     </div>
                 </div>
-                <button onClick={onToggle} className="p-1.5 hover:bg-gray-50 rounded-full text-gray-400 hover:text-gray-600 transition-colors">
-                    <X size={16} />
-                </button>
+                <div className="flex items-center gap-1">
+                    {setMode && (
+                        <button
+                            onClick={() => setMode(mode === 'docked' ? 'overlay' : 'docked')}
+                            className="p-1.5 hover:bg-gray-100/50 rounded text-gray-400 hover:text-gray-600 transition-colors"
+                            title={mode === 'docked' ? "切换悬浮模式" : "切换停靠模式"}
+                        >
+                            <RefreshCw size={14} className={mode === 'docked' ? '' : 'text-blue-500'} />
+                        </button>
+                    )}
+                    <button onClick={onToggle} className="p-1.5 hover:bg-gray-50 rounded-full text-gray-400 hover:text-gray-600 transition-colors">
+                        <X size={16} />
+                    </button>
+                </div>
             </div>
 
             {/* Messages Area */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/50">
+            <div className={`flex-1 overflow-y-auto p-4 space-y-4 ${mode === 'overlay' ? 'bg-gray-50/80' : 'bg-gray-50/50'}`}>
                 {messages.length === 0 && (
                     <div className="text-center text-gray-400 mt-20 space-y-3">
                         <div className="w-12 h-12 bg-white rounded-full shadow-sm mx-auto flex items-center justify-center text-gray-300">
@@ -123,7 +183,7 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
             </div>
 
             {/* Input Area */}
-            <div className="p-3 border-t border-gray-100 bg-white shrink-0">
+            <div className="p-3 border-t border-gray-100 bg-white/80 backdrop-blur-md shrink-0">
                 <div className="relative">
                     <textarea
                         value={input}

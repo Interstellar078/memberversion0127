@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Plus, Trash2, Calendar, Save, CheckCircle, Library, Search, X, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, Calendar, Save, CheckCircle, Library, Search, X, RefreshCw, LayoutGrid, Table as TableIcon } from 'lucide-react';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 import { DayRow, TripSettings, TransportType, CustomColumn, SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, User, CountryFile, TransportItem, HotelItem, GeneralItem } from './types';
@@ -8,15 +8,16 @@ import { GlobalSettings } from './components/GlobalSettings';
 import { ResourceDatabase } from './components/ResourceDatabase';
 import { AuthModal } from './components/AuthModal';
 import { AdminDashboard } from './components/AdminDashboard';
-import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
+// import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 import { addDays, generateUUID } from './utils/dateUtils';
-import { generateItinerary } from './services/aiService';
+import { generateItinerary, ItineraryItem, ItineraryResponse } from './services/aiService';
 import { AuthService } from './services/authService';
 
 import { StorageService } from './services/storageService';
 import { AIChatSidebar, ChatMessage } from './components/AIChatSidebar';
 import { AppHeader } from './components/AppHeader';
 import { ItineraryTable } from './components/ItineraryTable';
+import { ItineraryCardList } from './components/ItineraryCardList';
 
 const INITIAL_ROWS = 8;
 
@@ -110,8 +111,13 @@ export default function App() {
     // const [aiPromptInput, setAiPromptInput] = useState(''); // REMOVED
     const [isGenerating, setIsGenerating] = useState(false);
 
+    // View State
+    const [viewMode, setViewMode] = useState<'table' | 'card'>('table');
+
     // Chat State
     const [isChatOpen, setIsChatOpen] = useState(true);
+    const [chatWidth, setChatWidth] = useState(400);
+    const [chatMode, setChatMode] = useState<'docked' | 'overlay'>('docked');
     const [conversationId] = useState(() => {
         const key = 'ai_conversation_id';
         const existing = localStorage.getItem(key);
@@ -126,10 +132,10 @@ export default function App() {
     ]);
 
     const [colWidths, setColWidths] = useState<Record<string, number>>({
-        day: 48, date: 110, route: 160, transport: 200, hotel: 220,
-        ticket: 180, activity: 180, otherService: 180, description: 250,
-        transportCost: 90, hotelCost: 90,
-        ticketCost: 90, activityCost: 90, otherCost: 90
+        day: 40, date: 105, route: 150, transport: 190, hotel: 210,
+        ticket: 170, activity: 170, otherService: 170, description: 230,
+        transportCost: 85, hotelCost: 85,
+        ticketCost: 85, activityCost: 85, otherCost: 85
     });
 
     const totalCost = useMemo(() => rows.reduce((acc, r) => acc + r.transportCost + r.hotelCost + r.ticketCost + r.activityCost + r.otherCost, 0), [rows]);
@@ -823,6 +829,10 @@ export default function App() {
         setTimeout(() => setNotification({ show: false, message: '' }), 3000);
     };
 
+    useEffect(() => {
+        console.log('App Version: DND Removed Fix 1.0');
+    }, []);
+
     const handleNewTrip = () => {
         if (window.confirm("确定要新建行程吗？当前未保存的内容将丢失。")) {
             setActiveTripId(null);
@@ -970,11 +980,11 @@ export default function App() {
                             ticketDetails: ticketItems.length > 0 ? ticketItems : currentRow.ticketDetails,
                             activityDetails: activityItems.length > 0 ? activityItems : currentRow.activityDetails,
                             description: item.description || currentRow.description,
-                            transportCost: toNumberOrUndefined(item.transportCost) ?? currentRow.transportCost,
-                            hotelCost: toNumberOrUndefined(item.hotelCost) ?? currentRow.hotelCost,
-                            ticketCost: toNumberOrUndefined(item.ticketCost) ?? currentRow.ticketCost,
-                            activityCost: toNumberOrUndefined(item.activityCost) ?? currentRow.activityCost,
-                            otherCost: toNumberOrUndefined(item.otherCost) ?? currentRow.otherCost,
+                            transportCost: currentRow.transportCost,
+                            hotelCost: currentRow.hotelCost,
+                            ticketCost: currentRow.ticketCost,
+                            activityCost: currentRow.activityCost,
+                            otherCost: currentRow.otherCost,
                             manualCostFlags: {
                                 ...currentRow.manualCostFlags,
                                 hotel: false,
@@ -1001,15 +1011,7 @@ export default function App() {
                 };
                 setChatMessages(prev => [...prev, aiMsg]);
                 setNotification({ show: true, message: 'AI 规划完成！请点击“刷新价格”以计算最新费用。' });
-                if (result.followUp) {
-                    const followMsg: ChatMessage = {
-                        id: generateUUID(),
-                        role: 'assistant',
-                        content: result.followUp,
-                        timestamp: Date.now()
-                    };
-                    setChatMessages(prev => [...prev, followMsg]);
-                }
+
                 setTimeout(() => setNotification({ show: false, message: '' }), 4000);
             } else {
                 const err = result?.error || 'AI 返回了无效的行程数据';
@@ -1019,36 +1021,38 @@ export default function App() {
             console.error("AI Error in App:", e);
             let msg = e.message;
             if (msg === 'Failed to fetch') msg = '网络请求失败，请检查您的网络连接。';
-            const errorMsg: ChatMessage = { id: generateUUID(), role: 'assistant', content: `抱歉，执行任务时遇到了问题：
+            const errorMsg: ChatMessage = {
+                id: generateUUID(), role: 'assistant', content: `抱歉，执行任务时遇到了问题：
 ${msg}
 
-请稍后再试。`, timestamp: Date.now() };
+请稍后再试。`, timestamp: Date.now()
+            };
             setChatMessages(prev => [...prev, errorMsg]);
         } finally {
             setIsGenerating(false);
         }
     };
 
-    const handleDragEnd = (result: DropResult) => {
-        if (!result.destination) return;
+    // const handleDragEnd = (result: DropResult) => {
+    //     if (!result.destination) return;
 
-        const sourceIndex = result.source.index;
-        const destinationIndex = result.destination.index;
+    //     const sourceIndex = result.source.index;
+    //     const destinationIndex = result.destination.index;
 
-        if (sourceIndex === destinationIndex) return;
+    //     if (sourceIndex === destinationIndex) return;
 
-        const newRows = [...rows];
-        const [reorderedItem] = newRows.splice(sourceIndex, 1);
-        newRows.splice(destinationIndex, 0, reorderedItem);
+    //     const newRows = [...rows];
+    //     const [reorderedItem] = newRows.splice(sourceIndex, 1);
+    //     newRows.splice(destinationIndex, 0, reorderedItem);
 
-        // Re-assign Day Indices securely
-        const reindexedRows = newRows.map((row, index) => ({
-            ...row,
-            dayIndex: index + 1
-        }));
+    //     // Re-assign Day Indices securely
+    //     const reindexedRows = newRows.map((row, index) => ({
+    //         ...row,
+    //         dayIndex: index + 1
+    //     }));
 
-        setRows(reindexedRows);
-    };
+    //     setRows(reindexedRows);
+    // };
 
     return (
         <div className="h-screen overflow-hidden bg-gray-50 flex flex-col font-sans text-gray-900">
@@ -1073,54 +1077,85 @@ ${msg}
 
             <div className="flex-1 flex flex-row overflow-hidden relative">
                 {/* Responsive margin: only apply mr-[400px] on large screens when chat is open */}
-                <div className={`flex-1 flex flex-col h-full overflow-hidden transition-all duration-300 ${isChatOpen ? 'lg:mr-[400px]' : ''}`}>
+                <div
+                    className={`flex-1 flex flex-col h-full overflow-hidden transition-all duration-300`}
+                    style={{ marginRight: (isChatOpen && chatMode === 'docked' && window.innerWidth >= 1024) ? `${chatWidth}px` : '0px' }}
+                >
                     <div className="flex-1 p-6 overflow-auto">
+                        <div className="flex justify-end mb-4 gap-2">
+                            <div className="bg-white p-1 rounded-lg border border-gray-200 shadow-sm flex">
+                                <button
+                                    onClick={() => setViewMode('table')}
+                                    className={`p-1.5 rounded-md transition-all ${viewMode === 'table' ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+                                    title="表格视图"
+                                >
+                                    <TableIcon size={18} />
+                                </button>
+                                <button
+                                    onClick={() => setViewMode('card')}
+                                    className={`p-1.5 rounded-md transition-all ${viewMode === 'card' ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+                                    title="卡片视图"
+                                >
+                                    <LayoutGrid size={18} />
+                                </button>
+                            </div>
+                        </div>
+
                         <div>
                             <GlobalSettings settings={settings} updateSettings={(s) => setSettings(prev => ({ ...prev, ...s }))} availableCountries={Array.from(new Set(poiCities.filter(isResourceVisible).map(c => c.country)))} />
                         </div>
-                        <ItineraryTable
-                            rows={rows}
-                            setRows={setRows}
-                            settings={settings}
-                            setSettings={setSettings}
-                            colWidths={colWidths}
-                            setColWidths={setColWidths}
-                            isMember={isMember}
-                            totalCost={totalCost}
-                            setIsChatOpen={setIsChatOpen}
-                            handleRefreshCosts={handleRefreshCosts}
-                            handleDeleteRow={handleDeleteRow}
-                            handleDragEnd={handleDragEnd}
-                            updateRow={updateRow}
-                            handleRouteUpdate={handleRouteUpdate}
-                            handleQuickSave={handleQuickSave}
 
-                            poiCities={poiCities}
-                            carDB={carDB}
-                            poiHotels={poiHotels}
-                            poiSpots={poiSpots}
-                            poiActivities={poiActivities}
-                            poiOthers={poiOthers}
+                        {viewMode === 'table' ? (
+                            <ItineraryTable
+                                rows={rows}
+                                setRows={setRows}
+                                settings={settings}
+                                setSettings={setSettings}
+                                colWidths={colWidths}
+                                setColWidths={setColWidths}
+                                isMember={isMember}
+                                totalCost={totalCost}
+                                setIsChatOpen={setIsChatOpen}
+                                handleRefreshCosts={handleRefreshCosts}
+                                handleDeleteRow={handleDeleteRow}
+                                // handleDragEnd={handleDragEnd}
+                                updateRow={updateRow}
+                                handleRouteUpdate={handleRouteUpdate}
+                                handleQuickSave={handleQuickSave}
 
-                            createEmptyRow={createEmptyRow}
-                            isResourceVisible={isResourceVisible}
-                            allowedCityNames={allowedCityNames}
-                            extractCitiesFromRoute={extractCitiesFromRoute}
-                            getMatchingCityIds={getMatchingCityIds}
-                            getDestinationCityIds={getDestinationCityIds}
-                            shouldMaskPrice={shouldMaskPrice}
-                            maskNumber={maskNumber}
+                                poiCities={poiCities}
+                                carDB={carDB}
+                                poiHotels={poiHotels}
+                                poiSpots={poiSpots}
+                                poiActivities={poiActivities}
+                                poiOthers={poiOthers}
 
-                            addTransportItem={addTransportItem}
-                            updateTransportItem={updateTransportItem}
-                            removeTransportItem={removeTransportItem}
-                            addHotelItem={addHotelItem}
-                            updateHotelItem={updateHotelItem}
-                            removeHotelItem={removeHotelItem}
-                            addGeneralItem={addGeneralItem}
-                            updateGeneralItem={updateGeneralItem}
-                            removeGeneralItem={removeGeneralItem}
-                        />
+                                createEmptyRow={createEmptyRow}
+                                isResourceVisible={isResourceVisible}
+                                allowedCityNames={allowedCityNames}
+                                extractCitiesFromRoute={extractCitiesFromRoute}
+                                getMatchingCityIds={getMatchingCityIds}
+                                getDestinationCityIds={getDestinationCityIds}
+                                shouldMaskPrice={shouldMaskPrice}
+                                maskNumber={maskNumber}
+
+                                addTransportItem={addTransportItem}
+                                updateTransportItem={updateTransportItem}
+                                removeTransportItem={removeTransportItem}
+                                addHotelItem={addHotelItem}
+                                updateHotelItem={updateHotelItem}
+                                removeHotelItem={removeHotelItem}
+                                addGeneralItem={addGeneralItem}
+                                updateGeneralItem={updateGeneralItem}
+                                removeGeneralItem={removeGeneralItem}
+                            />
+                        ) : (
+                            <ItineraryCardList
+                                rows={rows}
+                                setRows={setRows}
+                            />
+                        )}
+
                     </div>
                     {/* ... Rest of components ... */}
 
@@ -1142,6 +1177,10 @@ ${msg}
                     isGenerating={isGenerating}
                     isOpen={isChatOpen}
                     onToggle={() => setIsChatOpen(!isChatOpen)}
+                    width={chatWidth}
+                    setWidth={setChatWidth}
+                    mode={chatMode}
+                    setMode={setChatMode}
                 />
             </div>
 
