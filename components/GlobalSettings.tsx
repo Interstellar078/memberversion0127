@@ -12,7 +12,7 @@ interface GlobalSettingsProps {
 
 export const GlobalSettings: React.FC<GlobalSettingsProps> = ({ settings, updateSettings, availableCountries }) => {
   return (
-    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-6 no-print">
+    <div className="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-gray-200 mb-6 no-print">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         
         {/* Planner Name */}

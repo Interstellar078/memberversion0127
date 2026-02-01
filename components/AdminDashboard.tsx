@@ -1,9 +1,10 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { X, Users, Activity, Trash2, Search, ShieldAlert, HardDrive, Download, Upload, AlertTriangle, CheckCircle, Loader2, UserCheck, Database, Clock, User as UserIcon, Settings as SettingsIcon, Save, Key, Lock, Unlock } from 'lucide-react';
+import { X, Users, Activity, Trash2, Search, ShieldAlert, HardDrive, Download, Upload, AlertTriangle, CheckCircle, Loader2, UserCheck, Database, Clock, User as UserIcon, Settings as SettingsIcon, Save, Key, Lock, Unlock, FileJson, RefreshCw } from 'lucide-react';
 import { AuthService } from '../services/authService';
 import { StorageService } from '../services/storageService';
-import { User, AuditLog, UserRole, ResourceMetadata } from '../types';
+import { User, AuditLog, UserRole, ResourceMetadata, ResourceFile } from '../types';
+import { generateUUID } from '../utils/dateUtils';
 
 interface AdminDashboardProps {
   currentUser: User;
@@ -144,6 +145,137 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onC
       }
   };
 
+  const generateKnowledgeData = async () => {
+      const [cars, cities, spots, hotels, activities] = await Promise.all([
+          StorageService.getCars(),
+          StorageService.getCities(),
+          StorageService.getSpots(),
+          StorageService.getHotels(),
+          StorageService.getActivities()
+      ]);
+
+      return {
+          metadata: {
+              generatedAt: new Date().toISOString(),
+              exportedBy: currentUser.username,
+              system: "Xing Ai Travel Assistant",
+              description: "Structured Resource Knowledge Base for AI Learning"
+          },
+          summary: {
+              carsCount: cars.length,
+              hotelsCount: hotels.length,
+              spotsCount: spots.length,
+              activitiesCount: activities.length
+          },
+          structuredData: {
+              cars: cars.map(c => ({
+                  region: c.region,
+                  model: c.carModel,
+                  serviceType: c.serviceType,
+                  passengers: c.passengers,
+                  priceLow: c.priceLow,
+                  priceHigh: c.priceHigh
+              })),
+              hotels: hotels.map(h => {
+                  const city = cities.find(c => c.id === h.cityId);
+                  return {
+                      country: city?.country || 'Unknown',
+                      city: city?.name || 'Unknown',
+                      name: h.name,
+                      roomType: h.roomType,
+                      price: h.price,
+                      description: h.description
+                  };
+              }),
+              spots: spots.map(s => {
+                  const city = cities.find(c => c.id === s.cityId);
+                  return {
+                      country: city?.country || 'Unknown',
+                      city: city?.name || 'Unknown',
+                      name: s.name,
+                      price: s.price
+                  };
+              }),
+              activities: activities.map(a => {
+                  const city = cities.find(c => c.id === a.cityId);
+                  return {
+                      country: city?.country || 'Unknown',
+                      city: city?.name || 'Unknown',
+                      name: a.name,
+                      price: a.price
+                  };
+              })
+          }
+      };
+  };
+
+  const handleDownloadAIKnowledge = async () => {
+      if (currentUser.role !== 'super_admin') return;
+      setIsBackupLoading(true);
+      setBackupStatus('正在导出...');
+      try {
+          const exportData = await generateKnowledgeData();
+          const jsonString = JSON.stringify(exportData, null, 2);
+          const blob = new Blob([jsonString], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `xingai_ai_knowledge_base_${new Date().toISOString().split('T')[0]}.json`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setBackupStatus('✅ 导出成功');
+          setTimeout(() => setBackupStatus(''), 3000);
+      } catch (e) {
+          console.error(e);
+          setBackupStatus('❌ 导出失败');
+      } finally {
+          setIsBackupLoading(false);
+      }
+  };
+
+  const handleGenerateAndSaveAIKnowledge = async () => {
+      if (currentUser.role !== 'super_admin') return;
+      setIsBackupLoading(true);
+      setBackupStatus('正在生成并更新 AI 知识库...');
+      
+      try {
+          const exportData = await generateKnowledgeData();
+          const jsonString = JSON.stringify(exportData, null, 2);
+          
+          // UTF-8 string to Base64
+          const base64Data = btoa(unescape(encodeURIComponent(jsonString)));
+
+          const fileName = 'AI_Structured_Knowledge.json';
+          const files = await StorageService.getResourceFiles();
+          const existingFile = files.find(f => f.fileName === fileName);
+          
+          const newFile: ResourceFile = {
+              id: existingFile ? existingFile.id : generateUUID(),
+              country: '通用',
+              category: 'other',
+              fileName: fileName,
+              fileType: 'application/json',
+              fileSize: jsonString.length,
+              data: base64Data,
+              description: '系统生成的全量结构化资源库，供 AI 深度学习使用 (由超级管理员手动更新)',
+              uploadedBy: currentUser.username,
+              uploadTime: Date.now()
+          };
+          
+          const otherFiles = files.filter(f => f.id !== newFile.id);
+          await StorageService.saveResourceFiles([...otherFiles, newFile]);
+          
+          setBackupStatus('✅ AI 知识库已更新至云端 (AI将在回答前学习此文件)');
+          setTimeout(() => setBackupStatus(''), 4000);
+      } catch (e) {
+          console.error(e);
+          setBackupStatus('❌ 更新失败');
+      } finally {
+          setIsBackupLoading(false);
+      }
+  };
+
   const handleBackup = async () => {
       try {
           setIsBackupLoading(true);
@@ -223,39 +355,39 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onC
             <button onClick={onClose} className="text-gray-400 hover:text-white"><X size={24}/></button>
         </div>
 
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 flex-col md:flex-row overflow-hidden">
             {/* Sidebar */}
-            <div className="w-48 bg-gray-50 border-r border-gray-200 pt-4 flex flex-col">
+            <div className="w-full md:w-48 bg-gray-50 border-b md:border-b-0 md:border-r border-gray-200 pt-2 md:pt-4 flex flex-row md:flex-col overflow-x-auto">
                 <button 
                     onClick={() => setActiveTab('logs')}
-                    className={`px-6 py-3 text-sm font-medium text-left flex items-center gap-2 ${activeTab === 'logs' ? 'bg-white border-r-2 border-blue-600 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
+                    className={`px-4 md:px-6 py-3 text-sm font-medium text-left flex items-center gap-2 whitespace-nowrap ${activeTab === 'logs' ? 'bg-white border-b-2 md:border-b-0 md:border-r-2 border-blue-600 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
                 >
                     <Activity size={16}/> 操作日志
                 </button>
                 <button 
                     onClick={() => setActiveTab('users')}
-                    className={`px-6 py-3 text-sm font-medium text-left flex items-center gap-2 ${activeTab === 'users' ? 'bg-white border-r-2 border-blue-600 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
+                    className={`px-4 md:px-6 py-3 text-sm font-medium text-left flex items-center gap-2 whitespace-nowrap ${activeTab === 'users' ? 'bg-white border-b-2 md:border-b-0 md:border-r-2 border-blue-600 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
                 >
                     <Users size={16}/> 用户管理
                 </button>
                 <button 
                     onClick={() => setActiveTab('system')}
-                    className={`px-6 py-3 text-sm font-medium text-left flex items-center gap-2 ${activeTab === 'system' ? 'bg-white border-r-2 border-blue-600 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
+                    className={`px-4 md:px-6 py-3 text-sm font-medium text-left flex items-center gap-2 whitespace-nowrap ${activeTab === 'system' ? 'bg-white border-b-2 md:border-b-0 md:border-r-2 border-blue-600 text-blue-600' : 'text-gray-600 hover:bg-gray-100'}`}
                 >
                     <HardDrive size={16}/> 系统维护
                 </button>
             </div>
 
             {/* Content */}
-            <div className="flex-1 flex flex-col bg-white">
+            <div className="flex-1 flex flex-col bg-white overflow-hidden">
                 {activeTab !== 'system' && (
-                    <div className="p-4 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+                    <div className="p-4 border-b border-gray-100 bg-gray-50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
                         <h4 className="font-bold text-gray-700">{activeTab === 'logs' ? '系统操作日志' : '注册用户列表'}</h4>
-                        <div className="relative">
+                        <div className="relative w-full sm:w-auto">
                             <Search size={14} className="absolute left-2.5 top-2.5 text-gray-400"/>
                             <input 
                                 type="text" 
-                                className="pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                                className="w-full sm:w-64 pl-8 pr-3 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
                                 placeholder="搜索..."
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -265,124 +397,129 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onC
                 )}
 
                 <div className="flex-1 overflow-auto p-4">
+                    {/* ... (Logs and Users tables remain unchanged) ... */}
                     {activeTab === 'logs' && (
-                        <table className="min-w-full divide-y divide-gray-200">
-                            <thead className="bg-gray-50">
-                                <tr>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">时间</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">用户</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">动作</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">详情</th>
-                                </tr>
-                            </thead>
-                            <tbody className="bg-white divide-y divide-gray-200">
-                                {filteredLogs.map(log => (
-                                    <tr key={log.id} className="hover:bg-gray-50">
-                                        <td className="px-4 py-2 whitespace-nowrap text-xs text-gray-500">
-                                            {new Date(log.timestamp).toLocaleString()}
-                                        </td>
-                                        <td className="px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900">
-                                            {log.username}
-                                        </td>
-                                        <td className="px-4 py-2 whitespace-nowrap text-xs">
-                                            <span className={`px-2 py-1 rounded-full font-medium ${
-                                                log.action.includes('DELETE') ? 'bg-red-100 text-red-800' :
-                                                log.action.includes('CREATE') || log.action.includes('ADD') ? 'bg-green-100 text-green-800' :
-                                                'bg-blue-100 text-blue-800'
-                                            }`}>
-                                                {log.action}
-                                            </span>
-                                        </td>
-                                        <td className="px-4 py-2 text-sm text-gray-500 max-w-md truncate" title={log.details}>
-                                            {log.details}
-                                        </td>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">时间</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">用户</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">动作</th>
+                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">详情</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-200">
+                                    {filteredLogs.map(log => (
+                                        <tr key={log.id} className="hover:bg-gray-50">
+                                            <td className="px-4 py-2 whitespace-nowrap text-xs text-gray-500">
+                                                {new Date(log.timestamp).toLocaleString()}
+                                            </td>
+                                            <td className="px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900">
+                                                {log.username}
+                                            </td>
+                                            <td className="px-4 py-2 whitespace-nowrap text-xs">
+                                                <span className={`px-2 py-1 rounded-full font-medium ${
+                                                    log.action.includes('DELETE') ? 'bg-red-100 text-red-800' :
+                                                    log.action.includes('CREATE') || log.action.includes('ADD') ? 'bg-green-100 text-green-800' :
+                                                    'bg-blue-100 text-blue-800'
+                                                }`}>
+                                                    {log.action}
+                                                </span>
+                                            </td>
+                                            <td className="px-4 py-2 text-sm text-gray-500 max-w-md truncate" title={log.details}>
+                                                {log.details}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
                     )}
 
                     {activeTab === 'users' && (
-                        <table className="min-w-full divide-y divide-gray-200">
-                            <thead className="bg-gray-50">
-                                <tr>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">用户名</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">角色</th>
-                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">注册时间</th>
-                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
-                                </tr>
-                            </thead>
-                            <tbody className="bg-white divide-y divide-gray-200">
-                                {filteredUsers.map(u => (
-                                    <tr key={u.username} className="hover:bg-gray-50">
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900">
-                                            {u.username}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            {u.role === 'super_admin' ? (
-                                                <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs flex items-center w-fit gap-1"><ShieldAlert size={10}/> 超级管理员</span>
-                                            ) : u.role === 'admin' ? (
-                                                <span className="px-2 py-1 bg-purple-100 text-purple-800 rounded-full text-xs flex items-center w-fit gap-1"><UserCheck size={10}/> 管理员</span>
-                                            ) : (
-                                                <span className="px-2 py-1 bg-gray-100 text-gray-800 rounded-full text-xs">普通用户</span>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            {new Date(u.createdAt).toLocaleDateString()}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                                            <div className="flex justify-end gap-2 items-center">
-                                                
-                                                {/* Password Reset Button - Now available for ADMIN as well */}
-                                                <button 
-                                                    onClick={() => openPwdModal(u.username)} 
-                                                    className="text-gray-500 hover:text-blue-600 flex items-center gap-1 text-xs px-2 py-1 hover:bg-blue-50 rounded transition-colors"
-                                                    title="修改密码"
-                                                >
-                                                    <Key size={14}/>
-                                                </button>
-
-                                                {/* Actions only for non-admin users */}
-                                                {u.username !== 'admin' && (
-                                                    <>
-                                                        <div className="w-px h-4 bg-gray-300"></div>
-
-                                                        {/* Role Toggle */}
-                                                        {u.role !== 'admin' ? (
-                                                            <button 
-                                                                onClick={() => handleUpdateRole(u.username, 'admin')} 
-                                                                className="text-blue-600 hover:text-blue-900 flex items-center gap-1 text-xs px-2 py-1 hover:bg-blue-50 rounded transition-colors"
-                                                                title="提升为管理员"
-                                                            >
-                                                                <UserCheck size={14}/> 设为管理
-                                                            </button>
-                                                        ) : (
-                                                            <button 
-                                                                onClick={() => handleUpdateRole(u.username, 'user')} 
-                                                                className="text-orange-600 hover:text-orange-900 flex items-center gap-1 text-xs px-2 py-1 hover:bg-orange-50 rounded transition-colors"
-                                                                title="降级为普通用户"
-                                                            >
-                                                                <ShieldAlert size={14}/> 取消管理
-                                                            </button>
-                                                        )}
-                                                        <div className="w-px h-4 bg-gray-300"></div>
-                                                        
-                                                        {/* Delete */}
-                                                        <button 
-                                                            onClick={() => handleDeleteUser(u.username)} 
-                                                            className="text-red-600 hover:text-red-900 flex items-center gap-1 text-xs px-2 py-1 hover:bg-red-50 rounded transition-colors"
-                                                            title="删除用户"
-                                                        >
-                                                            <Trash2 size={14}/> 删除
-                                                        </button>
-                                                    </>
-                                                )}
-                                            </div>
-                                        </td>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-gray-200">
+                                <thead className="bg-gray-50">
+                                    <tr>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">用户名</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">角色</th>
+                                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">注册时间</th>
+                                        <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
                                     </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-200">
+                                    {filteredUsers.map(u => (
+                                        <tr key={u.username} className="hover:bg-gray-50">
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900">
+                                                {u.username}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                {u.role === 'super_admin' ? (
+                                                    <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs flex items-center w-fit gap-1"><ShieldAlert size={10}/> 超级管理员</span>
+                                                ) : u.role === 'admin' ? (
+                                                    <span className="px-2 py-1 bg-purple-100 text-purple-800 rounded-full text-xs flex items-center w-fit gap-1"><UserCheck size={10}/> 管理员</span>
+                                                ) : (
+                                                    <span className="px-2 py-1 bg-gray-100 text-gray-800 rounded-full text-xs">普通用户</span>
+                                                )}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                                {new Date(u.createdAt).toLocaleDateString()}
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <div className="flex justify-end gap-2 items-center">
+                                                    
+                                                    {/* Password Reset Button */}
+                                                    <button 
+                                                        onClick={() => openPwdModal(u.username)} 
+                                                        className="text-gray-500 hover:text-blue-600 flex items-center gap-1 text-xs px-2 py-1 hover:bg-blue-50 rounded transition-colors"
+                                                        title="修改密码"
+                                                    >
+                                                        <Key size={14}/>
+                                                    </button>
+
+                                                    {/* Actions only for non-admin users */}
+                                                    {u.username !== 'admin' && (
+                                                        <>
+                                                            <div className="w-px h-4 bg-gray-300"></div>
+
+                                                            {/* Role Toggle */}
+                                                            {u.role !== 'admin' ? (
+                                                                <button 
+                                                                    onClick={() => handleUpdateRole(u.username, 'admin')} 
+                                                                    className="text-blue-600 hover:text-blue-900 flex items-center gap-1 text-xs px-2 py-1 hover:bg-blue-50 rounded transition-colors"
+                                                                    title="提升为管理员"
+                                                                >
+                                                                    <UserCheck size={14}/> 设为管理
+                                                                </button>
+                                                            ) : (
+                                                                <button 
+                                                                    onClick={() => handleUpdateRole(u.username, 'user')} 
+                                                                    className="text-orange-600 hover:text-orange-900 flex items-center gap-1 text-xs px-2 py-1 hover:bg-orange-50 rounded transition-colors"
+                                                                    title="降级为普通用户"
+                                                                >
+                                                                    <ShieldAlert size={14}/> 取消管理
+                                                                </button>
+                                                            )}
+                                                            <div className="w-px h-4 bg-gray-300"></div>
+                                                            
+                                                            {/* Delete */}
+                                                            <button 
+                                                                onClick={() => handleDeleteUser(u.username)} 
+                                                                className="text-red-600 hover:text-red-900 flex items-center gap-1 text-xs px-2 py-1 hover:bg-red-50 rounded transition-colors"
+                                                                title="删除用户"
+                                                            >
+                                                                <Trash2 size={14}/> 删除
+                                                            </button>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
                     )}
 
                     {activeTab === 'system' && (
@@ -473,6 +610,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ currentUser, onC
                                         执行公开
                                     </button>
                                 </div>
+
+                                {currentUser.role === 'super_admin' && (
+                                    <div className="p-4 bg-indigo-50 rounded-lg border border-indigo-100 flex flex-col mt-4">
+                                        <div className="flex items-start justify-between mb-2">
+                                            <div>
+                                                <h4 className="font-bold text-indigo-800 text-sm mb-1">AI 知识库管理</h4>
+                                                <p className="text-xs text-indigo-700">生成全量结构化数据的 JSON 文件。可选择“仅下载”用于备份，或“生成并保存”以更新 AI 的学习库。</p>
+                                            </div>
+                                        </div>
+                                        <div className="flex gap-2 justify-end mt-2">
+                                            <button 
+                                                onClick={handleDownloadAIKnowledge}
+                                                disabled={isBackupLoading}
+                                                className="px-3 py-1.5 bg-indigo-100 hover:bg-indigo-200 text-indigo-800 text-xs font-bold rounded flex items-center gap-2 transition-colors"
+                                            >
+                                                <Download size={14}/>
+                                                仅下载
+                                            </button>
+                                            <button 
+                                                onClick={handleGenerateAndSaveAIKnowledge}
+                                                disabled={isBackupLoading}
+                                                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded flex items-center gap-2 transition-colors shadow-sm"
+                                            >
+                                                {isBackupLoading ? <Loader2 size={14} className="animate-spin"/> : <RefreshCw size={14}/>}
+                                                生成并保存 AI 知识库
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">

@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Plus, Trash2, Download, Save, FolderOpen, Rocket, Sparkles, Database, Filter, Calendar, MapPin, Clock, Copy, Edit3, X, FileDown, FileUp, HardDrive, PlusCircle, CheckCircle, RotateCcw, ArrowRightCircle, Search, LogOut, ShieldAlert, FileSpreadsheet, Calculator, Info, Library, Wand2, Loader2, Upload, Cloud, RefreshCw, Settings, AlertTriangle, User as UserIcon, MinusCircle, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Trash2, Download, Save, FolderOpen, Rocket, Sparkles, Database, Filter, Calendar, MapPin, Clock, Copy, Edit3, X, FileDown, FileUp, HardDrive, PlusCircle, CheckCircle, RotateCcw, ArrowRightCircle, Search, LogOut, ShieldAlert, FileSpreadsheet, Calculator, Info, Library, Wand2, Loader2, Upload, Cloud, RefreshCw, Settings, AlertTriangle, User as UserIcon, MinusCircle, ChevronDown, ChevronUp, MessageCircle, Send, Minimize2, Paperclip, FileText, Image as ImageIcon } from 'lucide-react';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
-import { DayRow, TripSettings, TransportType, CustomColumn, SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, User, CountryFile, TransportItem, HotelItem, GeneralItem } from './types';
+import { DayRow, TripSettings, TransportType, CustomColumn, SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, User, CountryFile, TransportItem, HotelItem, GeneralItem, ResourceFile } from './types';
 import { GlobalSettings } from './components/GlobalSettings';
 import { Autocomplete } from './components/Autocomplete';
 import { MultiSelect } from './components/MultiSelect';
@@ -11,7 +11,7 @@ import { ResourceDatabase } from './components/ResourceDatabase';
 import { AuthModal } from './components/AuthModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import { addDays, generateUUID } from './utils/dateUtils';
-import { suggestHotels, generateFileName, generateComprehensiveItinerary, ItineraryItem, AIPlanningResult } from './services/geminiService';
+import { suggestHotels, generateFileName, generateComprehensiveItinerary, ItineraryItem, AIPlanningResult, askTravelAI } from './services/geminiService';
 import { AuthService } from './services/authService';
 import { StorageService } from './services/storageService';
 import { SupabaseManager } from './services/supabaseClient';
@@ -22,7 +22,8 @@ export default function App() {
   // --- Auth State ---
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [showAdminDashboard, setShowAdminDashboard] = useState(false);
-  const [showAuthModal, setShowAuthModal] = useState(false);
+  // Remove showAuthModal as we now enforce login via conditional rendering
+  // const [showAuthModal, setShowAuthModal] = useState(false);
 
   // --- App State ---
   const [isAppLoading, setIsAppLoading] = useState(true);
@@ -59,6 +60,7 @@ export default function App() {
   const [poiActivities, setPoiActivities] = useState<PoiActivity[]>([]);
   const [poiOthers, setPoiOthers] = useState<PoiOther[]>([]); 
   const [countryFiles, setCountryFiles] = useState<CountryFile[]>([]);
+  const [resourceFiles, setResourceFiles] = useState<ResourceFile[]>([]); // NEW: Resource Files
 
   // 3. Trips & History
   const [savedTrips, setSavedTrips] = useState<SavedTrip[]>([]);
@@ -72,11 +74,11 @@ export default function App() {
       date: '',
       route: '',
       transport: ['包车'],
-      transportDetails: [], // NEW
-      hotelDetails: [], // NEW
-      ticketDetails: [], // NEW
-      activityDetails: [], // NEW
-      otherDetails: [], // NEW
+      transportDetails: [], 
+      hotelDetails: [], 
+      ticketDetails: [], 
+      activityDetails: [], 
+      otherDetails: [], 
       description: '',
       transportCost: 0,
       hotelCost: 0,
@@ -92,22 +94,27 @@ export default function App() {
   const [activeTripId, setActiveTripId] = useState<string | null>(null);
   const [isResourceOpen, setIsResourceOpen] = useState(false);
   
-  const [qsModal, setQsModal] = useState<{
-    isOpen: boolean;
-    type: 'route' | 'hotel' | 'ticket' | 'activity';
-    rowIndex: number;
-    itemsDisplay: string;
-    routeCities: string[];
-    targetCityName: string;
-    smartCountry: string;
-  } | null>(null);
-  const [qsSelectedCountry, setQsSelectedCountry] = useState('');
-  
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveName, setSaveName] = useState('');
   const [showAIModal, setShowAIModal] = useState(false);
   const [aiPromptInput, setAiPromptInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+
+  // Chat State
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const [chatAttachment, setChatAttachment] = useState<{data: string, mimeType: string, previewUrl?: string} | null>(null);
+  const [chatMessages, setChatMessages] = useState<{
+      role: 'user' | 'model', 
+      text: string, 
+      attachment?: string,
+      responseImages?: string[] 
+  }[]>([
+      { role: 'model', text: '你好！我是星艾，你的专业旅行顾问。你可以问我关于内部资源库的问题，或者让我帮你查阅已上传的文档。' }
+  ]);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatFileRef = useRef<HTMLInputElement>(null);
 
   const [colWidths, setColWidths] = useState<Record<string, number>>({
       day: 48, date: 110, route: 160, transport: 200, hotel: 220, 
@@ -148,15 +155,20 @@ export default function App() {
     if (settings.destinations.length > 0) {
         cities = cities.filter(c => settings.destinations.includes(c.country));
     }
-    return cities.map(c => c.name);
+    return Array.from(new Set(cities.map(c => c.name))).sort();
   }, [poiCities, settings.destinations, currentUser]);
 
   useEffect(() => {
       const initApp = async () => {
           setIsAppLoading(true);
           const user = await AuthService.getCurrentUser();
-          if (user) setCurrentUser(user);
-          await loadCloudData(user);
+          if (user) {
+              setCurrentUser(user);
+              await loadCloudData(user);
+          } else {
+              // If no user, we don't load confidential cloud data yet, 
+              // but we need to stop loading so AuthModal can show.
+          }
           setIsAppLoading(false);
       };
       initApp();
@@ -178,13 +190,17 @@ export default function App() {
       }
   }, [settings.startDate]);
 
+  // Scroll chat to bottom
+  useEffect(() => {
+      if (isChatOpen && chatEndRef.current) {
+          chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      }
+  }, [chatMessages, isChatOpen, chatAttachment]);
+
   const loadCloudData = async (user: User | null = currentUser) => {
       try {
             await StorageService.migrateLocalData().catch(console.warn);
             await StorageService.ensureAdminProfile().catch(console.warn);
-            
-            // --- Phase 1: Critical User Data (Trips & Settings) ---
-            // Load this SEPARATELY so if Resources fail (too large), user still sees trips.
             try {
                 const trips = await StorageService.getTrips();
                 setSavedTrips(trips);
@@ -192,7 +208,6 @@ export default function App() {
                 console.error("Failed to load trips", e);
                 setNotification({ show: true, message: '行程加载失败' });
             }
-
             try {
                  const [locs, settings, config] = await Promise.all([
                     StorageService.getLocations(),
@@ -208,20 +223,17 @@ export default function App() {
             } catch (e) {
                  console.error("Failed to load settings", e);
             }
-
-            // --- Phase 2: Heavy Resources ---
-            // Wrapped in its own try-catch to prevent crashing the whole app
             try {
-                const [cars, cities, spots, hotels, activities, others, files] = await Promise.all([
+                const [cars, cities, spots, hotels, activities, others, files, resFiles] = await Promise.all([
                     StorageService.getCars(),
                     StorageService.getCities(),
                     StorageService.getSpots(),
                     StorageService.getHotels(),
                     StorageService.getActivities(),
                     StorageService.getOthers(), 
-                    StorageService.getFiles()
+                    StorageService.getFiles(),
+                    StorageService.getResourceFiles() // New
                 ]);
-
                 setCarDB(cars);
                 setPoiCities(cities);
                 setPoiSpots(spots);
@@ -229,11 +241,11 @@ export default function App() {
                 setPoiActivities(activities);
                 setPoiOthers(others); 
                 setCountryFiles(files);
+                setResourceFiles(resFiles); // New
             } catch (e) {
                 console.error("Failed to load full resources", e);
                 setNotification({ show: true, message: '部分资源加载失败 (可能数据量过大)，请尝试刷新。' });
             }
-
             setDataLoadedSuccessfully(true); 
             setCloudStatus('synced');
       } catch (e) {
@@ -264,6 +276,7 @@ export default function App() {
   useDebouncedSave(poiActivities, StorageService.saveActivities);
   useDebouncedSave(poiOthers, StorageService.saveOthers); 
   useDebouncedSave(countryFiles, StorageService.saveFiles);
+  useDebouncedSave(resourceFiles, StorageService.saveResourceFiles); // New
   useDebouncedSave(savedTrips, StorageService.saveTrips);
   useDebouncedSave(locationHistory, StorageService.saveLocations);
   useDebouncedSave(colWidths, StorageService.saveAppSettings);
@@ -289,7 +302,8 @@ export default function App() {
               StorageService.saveHotels(poiHotels),
               StorageService.saveActivities(poiActivities),
               StorageService.saveOthers(poiOthers), 
-              StorageService.saveFiles(countryFiles)
+              StorageService.saveFiles(countryFiles),
+              StorageService.saveResourceFiles(resourceFiles) // New
           ]);
           setCloudStatus('synced');
           setNotification({ show: true, message: '已立即同步至云端' });
@@ -305,14 +319,15 @@ export default function App() {
       setIsRefreshingResources(true);
       setCloudStatus('syncing');
       try {
-          const [cars, cities, spots, hotels, activities, others, files] = await Promise.all([
+          const [cars, cities, spots, hotels, activities, others, files, resFiles] = await Promise.all([
               StorageService.getCars(),
               StorageService.getCities(),
               StorageService.getSpots(),
               StorageService.getHotels(),
               StorageService.getActivities(),
               StorageService.getOthers(), 
-              StorageService.getFiles()
+              StorageService.getFiles(),
+              StorageService.getResourceFiles()
           ]);
           setCarDB(cars);
           setPoiCities(cities);
@@ -321,6 +336,7 @@ export default function App() {
           setPoiActivities(activities);
           setPoiOthers(others); 
           setCountryFiles(files);
+          setResourceFiles(resFiles);
           setCloudStatus('synced');
           setIsResourceOpen(true);
       } catch (error) {
@@ -333,12 +349,12 @@ export default function App() {
       }
   };
 
+  // ... (Rest of existing App.tsx logic unchanged until Return) ...
   const handleOpenSavedList = async () => {
       if (isRefreshingTrips) return;
       setIsRefreshingTrips(true);
       setCloudStatus('syncing');
       try {
-          // Explicitly reload trips. If this fails, we catch it.
           const trips = await StorageService.getTrips();
           setSavedTrips(trips);
           setCloudStatus('synced');
@@ -346,7 +362,7 @@ export default function App() {
       } catch (error) {
           console.error("Failed to refresh trips", error);
           setCloudStatus('error');
-          setShowSavedList(true); // Still open the list even if refresh failed (shows last known state)
+          setShowSavedList(true);
           alert("刷新行程列表失败，请检查网络。");
       } finally {
           setIsRefreshingTrips(false);
@@ -457,7 +473,10 @@ export default function App() {
       const newRows = rows.map(row => {
           let updatedRow = { ...row };
           updatedRow.transportDetails = row.transportDetails.map(item => {
-              const car = visibleCars.find(c => c.carModel === item.model); 
+              let car = visibleCars.find(c => c.carModel === item.model && c.serviceType === item.serviceType); 
+              if (!car && !item.serviceType) {
+                   car = visibleCars.find(c => c.carModel === item.model);
+              }
               if (car) {
                   return { ...item, price: item.priceType === 'high' ? car.priceHigh : car.priceLow, sourcePublic: car.isPublic || !car.createdBy };
               }
@@ -536,7 +555,8 @@ export default function App() {
       const newLocs = cities.filter(v => !locationHistory.includes(v));
       if (newLocs.length > 0) setLocationHistory([...locationHistory, ...newLocs]);
   };
-
+  
+  // ... (Transport/Hotel/General Item Add/Update/Remove functions - unchanged) ...
   const addTransportItem = (index: number) => {
       const row = rows[index];
       const visibleCars = carDB.filter(isResourceVisible);
@@ -544,6 +564,7 @@ export default function App() {
       const newItem: TransportItem = {
           id: generateUUID(),
           model: defaultCar ? defaultCar.carModel : '新车型',
+          serviceType: defaultCar ? defaultCar.serviceType : '包车',
           quantity: 1,
           priceType: 'low',
           price: defaultCar ? defaultCar.priceLow : 0,
@@ -557,9 +578,9 @@ export default function App() {
       const newDetails = row.transportDetails.map(item => {
           if (item.id === itemId) {
               const updated = { ...item, ...updates };
-              if (updates.model || updates.priceType) {
+              if (updates.model || updates.priceType || updates.serviceType) {
                    const visibleCars = carDB.filter(isResourceVisible);
-                   const car = visibleCars.find(c => c.carModel === updated.model);
+                   const car = visibleCars.find(c => c.carModel === updated.model && c.serviceType === updated.serviceType);
                    if (car) {
                        updated.price = updated.priceType === 'high' ? car.priceHigh : car.priceLow;
                        updated.sourcePublic = car.isPublic || !car.createdBy;
@@ -678,150 +699,51 @@ export default function App() {
       });
   };
 
-  const handleQuickSave = (type: 'route' | 'hotel' | 'ticket' | 'activity', rowIndex: number) => {
-    if (!currentUser) { alert("请先登录"); setShowAuthModal(true); return; }
-    const row = rows[rowIndex];
-    const routeCities = extractCitiesFromRoute(row.route);
-    let itemsDisplay = '';
-    let targetCityName = '';
-    if (type === 'route') {
-        const currentNames = new Set(poiCities.map(c => c.name));
-        const newCities = routeCities.filter(name => !currentNames.has(name));
-        if (newCities.length === 0) { alert("路线中的城市均已存在"); return; }
-        itemsDisplay = newCities.join('、');
-    } else {
-        targetCityName = routeCities.length > 0 ? routeCities[routeCities.length - 1] : '';
-        if (!targetCityName) { alert("无法识别目标城市，请先填写路线"); return; }
-        if (type === 'hotel') itemsDisplay = row.hotelDetails.map(h => h.name).filter(Boolean).join('、');
-        else if (type === 'ticket') itemsDisplay = row.ticketDetails.map(t => t.name).filter(Boolean).join('、');
-        else if (type === 'activity') itemsDisplay = row.activityDetails.map(a => a.name).filter(Boolean).join('、');
-    }
-    if (!itemsDisplay) { alert("该项为空，无法添加"); return; }
-    let detectedCountry = '';
-    if (type === 'route') {
-        const existingName = routeCities.find(n => poiCities.some(pc => pc.name === n));
-        if (existingName) {
-            const match = poiCities.find(pc => pc.name === existingName);
-            if (match) detectedCountry = match.country;
-        }
-    } else {
-        const match = poiCities.find(c => c.name === targetCityName);
-        if (match) detectedCountry = match.country;
-    }
-    if (!detectedCountry && settings.destinations.length > 0) detectedCountry = settings.destinations[0];
-    setQsModal({ isOpen: true, type, rowIndex, itemsDisplay, routeCities, targetCityName, smartCountry: detectedCountry || settings.destinations[0] || '' });
-    setQsSelectedCountry(detectedCountry || settings.destinations[0] || '');
-  };
-
-  const performQuickSave = () => {
-      if (!qsModal) return;
-      const { type, rowIndex, routeCities, targetCityName } = qsModal;
-      const finalCountry = qsSelectedCountry;
-      const row = rows[rowIndex];
-      if (!finalCountry) { alert("请选择归属国家"); return; }
-      let addedCount = 0;
-      let duplicateCount = 0;
-      let tempCities = [...poiCities];
-      let hasCityUpdate = false;
-      const baseItem = {
-          lastUpdated: Date.now(),
-          createdBy: currentUser?.username || 'user',
-          isPublic: isSuperAdmin 
-      };
-      const ensureCitySmart = (name: string): string => {
-          const exact = tempCities.find(c => c.country === finalCountry && c.name === name);
-          if (exact) return exact.id;
-          const newId = generateUUID();
-          tempCities.push({ id: newId, country: finalCountry, name, ...baseItem });
-          hasCityUpdate = true;
-          return newId;
-      };
-      if (type === 'route') {
-        const currentNames = new Set(poiCities.map(c => c.name));
-        routeCities.forEach(name => {
-             const id = ensureCitySmart(name);
-             if (!currentNames.has(name) && !poiCities.find(c => c.id === id)) addedCount++;
-             else duplicateCount++;
-        });
-        if (hasCityUpdate) setPoiCities(tempCities);
-      } else {
-        const cityId = ensureCitySmart(targetCityName);
-        if (hasCityUpdate) setPoiCities(tempCities);
-        if (type === 'hotel') { 
-            row.hotelDetails.forEach(item => {
-                if(!item.name) return;
-                const exists = poiHotels.some(h => h.cityId === cityId && h.name === item.name);
-                if (!exists) {
-                    setPoiHotels(prev => [...prev, { id: generateUUID(), cityId: cityId!, name: item.name, roomType: item.roomType || '标准间', price: item.price || 0, ...baseItem }]); 
-                    addedCount++;
-                } else duplicateCount++;
-            });
-        } else if (type === 'ticket') { 
-             const toAdd: PoiSpot[] = [];
-             row.ticketDetails.forEach(item => {
-                if(!item.name) return;
-                const exists = poiSpots.some(s => s.cityId === cityId && s.name === item.name);
-                if (!exists) {
-                    toAdd.push({ id: generateUUID(), cityId: cityId!, name: item.name, price: item.price || 0, ...baseItem });
-                    addedCount++;
-                } else duplicateCount++;
-            });
-            setPoiSpots(prev => [...prev, ...toAdd]); 
-        } else if (type === 'activity') { 
-            const toAdd: PoiActivity[] = [];
-            row.activityDetails.forEach(item => {
-                 if(!item.name) return;
-                 const exists = poiActivities.some(a => a.cityId === cityId && a.name === item.name);
-                 if (!exists) {
-                    toAdd.push({ id: generateUUID(), cityId: cityId!, name: item.name, price: item.price || 0, ...baseItem });
-                    addedCount++;
-                 } else duplicateCount++;
-            });
-            setPoiActivities(prev => [...prev, ...toAdd]); 
-        }
-      }
-      alert(addedCount > 0 ? `成功添加 ${addedCount} 个资源。` : "没有新资源被添加 (可能已存在)。");
-      if (addedCount > 0 || hasCityUpdate) handleResourceActivity(currentUser?.username || 'user');
-      setQsModal(null);
-  };
-
   const handleOpenSaveModal = () => {
     const planner = currentUser?.username || settings.plannerName || '未命名';
     let country = '未定国家';
-    if (settings.destinations.length > 0) { country = settings.destinations.join('+'); } else { const allCities = rows.flatMap(r => extractCitiesFromRoute(r.route)); if (allCities.length > 0) { const c = poiCities.find(pc => pc.name === allCities[0]); if (c) country = c.country; } }
+    if (settings.destinations.length > 0) {
+        country = settings.destinations.join('+');
+    } else {
+        const allCities = rows.flatMap(r => extractCitiesFromRoute(r.route));
+        if (allCities.length > 0) {
+            const c = poiCities.find(pc => pc.name === allCities[0]);
+            if (c) country = c.country;
+        }
+    }
     const duration = `${rows.length}天`;
     const now = new Date();
     const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
     const smartName = `${planner}_${country}_${duration}_${dateStr}`;
-    if (activeTripId) { const currentTrip = savedTrips.find(t => t.id === activeTripId); setSaveName(currentTrip ? currentTrip.name : smartName); } else { setSaveName(smartName); }
+    setSaveName(smartName); 
     setShowSaveModal(true);
   };
 
   const handleConfirmSave = async () => {
       const nameToCheck = saveName.trim();
       if (!nameToCheck) { alert("请输入行程名称"); return; }
-      const existingTripWithSameName = savedTrips.find(t => t.name === nameToCheck);
-      const currentEditingTrip = activeTripId ? savedTrips.find(t => t.id === activeTripId) : null;
-      const canModify = (trip: SavedTrip) => { 
-          if (!currentUser) return false; 
-          if (isSuperAdmin) return true; 
-          if (!trip.createdBy) return true; 
-          return trip.createdBy === currentUser.username; 
-      };
-      let targetId: string;
-      if (existingTripWithSameName) {
-          if (currentEditingTrip && existingTripWithSameName.id === currentEditingTrip.id) {
-              if (canModify(currentEditingTrip)) { targetId = currentEditingTrip.id; } else { if (!window.confirm(`您没有权限修改行程 "${nameToCheck}"。\n是否将其保存为您名下的新副本？`)) { return; } targetId = generateUUID(); }
-          } else {
-              if (!canModify(existingTripWithSameName)) { alert(`行程名称 "${nameToCheck}" 已存在且属于用户 ${existingTripWithSameName.createdBy || '未知'}。\n您没有权限覆盖它，请使用其他名称。`); return; }
-              if (!window.confirm(`行程名称 "${nameToCheck}" 已存在于行程库中。\n是否覆盖该旧行程？`)) { return; }
-              targetId = existingTripWithSameName.id;
+      const collisionTrip = savedTrips.find(t => t.name === nameToCheck);
+      let finalId = activeTripId;
+
+      if (collisionTrip) {
+          const isSelf = activeTripId && collisionTrip.id === activeTripId;
+          if (!isSelf) {
+               const canOverwrite = isSuperAdmin || (currentUser && collisionTrip.createdBy === currentUser.username) || (!collisionTrip.createdBy);
+               if (!canOverwrite) {
+                   alert(`行程 "${nameToCheck}" 已存在且由用户 ${collisionTrip.createdBy} 创建。\n您没有权限覆盖它，请修改名称。`);
+                   return;
+               }
+               if (!window.confirm(`行程名称 "${nameToCheck}" 已存在。\n确定要覆盖原有行程吗？`)) {
+                   return;
+               }
+               finalId = collisionTrip.id;
           }
       } else {
-          targetId = generateUUID();
+          if (!finalId) finalId = generateUUID();
       }
+
       const newTrip: SavedTrip = {
-        id: targetId,
+        id: finalId!,
         name: nameToCheck,
         timestamp: Date.now(),
         settings: settings,
@@ -831,9 +753,10 @@ export default function App() {
         lastModifiedBy: currentUser?.username || 'anonymous',
         isPublic: isSuperAdmin 
       };
-      const updatedTrips = [...savedTrips.filter(t => t.id !== targetId), newTrip];
+      
+      const updatedTrips = [...savedTrips.filter(t => t.id !== finalId), newTrip];
       setSavedTrips(updatedTrips);
-      setActiveTripId(targetId);
+      setActiveTripId(finalId);
       setShowSaveModal(false);
       setNotification({ show: true, message: '行程已保存' });
       setTimeout(() => setNotification({ show: false, message: '' }), 3000);
@@ -854,9 +777,9 @@ export default function App() {
     }));
     setRows(migratedRows);
     setCustomColumns(trip.customColumns || []);
-    setActiveTripId(trip.id);
+    setActiveTripId(null);
     setShowSavedList(false);
-    setNotification({ show: true, message: `已加载: ${trip.name}` });
+    setNotification({ show: true, message: `已加载: ${trip.name} (副本)` });
     setTimeout(() => setNotification({ show: false, message: '' }), 3000);
   };
 
@@ -898,9 +821,70 @@ export default function App() {
     XLSX.writeFile(wb, `${settings.customerName || 'Itinerary'}.xlsx`);
   };
 
+  // ... (Room Match Logic, Hotel Details Gen Logic, AI Planning Logic - unchanged) ...
+  const findBestRoomTypeMatch = (hotelName: string, targetOcc: number, prefType: string, allHotels: PoiHotel[]): string => {
+      const hotelEntries = allHotels.filter(h => h.name === hotelName);
+      if (hotelEntries.length === 0) {
+          if (targetOcc <= 1) return '单人间';
+          if (targetOcc === 2) return prefType && (prefType.includes('大') || prefType.includes('双')) ? prefType : '标准间';
+          if (targetOcc === 3) return '三人间';
+          return '家庭房';
+      }
+      const types = hotelEntries.map(h => h.roomType);
+      const score = (type: string) => {
+          let s = 0;
+          const t = type.toLowerCase();
+          if (targetOcc === 1) {
+              if (t.includes('单') || t.includes('single')) s += 10;
+          } else if (targetOcc === 2) {
+              if (t.includes('标') || t.includes('standard')) s += 5;
+              if (t.includes('双') || t.includes('twin')) s += 5;
+              if (t.includes('大') || t.includes('king')) s += 5;
+              if (prefType && t.includes(prefType)) s += 20; 
+          } else if (targetOcc === 3) {
+              if (t.includes('三') || t.includes('triple')) s += 10;
+              if (t.includes('家庭') || t.includes('family')) s += 5;
+          } else {
+              if (t.includes('家庭') || t.includes('family') || t.includes('套') || t.includes('suite')) s += 10;
+          }
+          return s;
+      };
+      types.sort((a, b) => score(b) - score(a));
+      return types[0];
+  };
+
+  const generateHotelDetails = (hotelName: string, people: number, rooms: number, prefType: string): HotelItem[] => {
+    if (!hotelName) return [];
+    const safeRooms = Math.max(1, rooms);
+    const safePeople = Math.max(1, people);
+    const items: HotelItem[] = [];
+    const baseOcc = Math.floor(safePeople / safeRooms);
+    const rem = safePeople % safeRooms; 
+    const countLarge = rem;
+    const countSmall = safeRooms - rem;
+    const occLarge = baseOcc + 1;
+    const occSmall = baseOcc;
+    const visibleHotels = poiHotels.filter(isResourceVisible);
+    if (countLarge > 0) {
+        const typeName = findBestRoomTypeMatch(hotelName, occLarge, prefType, visibleHotels);
+        items.push({ id: generateUUID(), name: hotelName, roomType: typeName, quantity: countLarge, price: 0, sourcePublic: false });
+    }
+    if (countSmall > 0) {
+        const typeName = findBestRoomTypeMatch(hotelName, occSmall <= 0 ? 1 : occSmall, prefType, visibleHotels);
+        const existing = items.find(i => i.roomType === typeName);
+        if (existing) { existing.quantity += countSmall; } else { items.push({ id: generateUUID(), name: hotelName, roomType: typeName, quantity: countSmall, price: 0, sourcePublic: false }); }
+    }
+    items.forEach(item => {
+        const match = visibleHotels.find(h => h.name === item.name && h.roomType === item.roomType);
+        if (match) { item.price = match.price; item.sourcePublic = match.isPublic || !match.createdBy; }
+    });
+    return items;
+  };
+
   const handleAIPlanning = async () => {
     if (!aiPromptInput.trim()) return;
     setIsGenerating(true);
+    const visibleCars = carDB.filter(isResourceVisible);
     const availableCountries: string[] = Array.from(new Set(poiCities.filter(c => isResourceVisible(c)).map(c => c.country)));
     const availableCities: string[] = poiCities.filter(c => isResourceVisible(c)).map(c => c.name);
 
@@ -916,20 +900,41 @@ export default function App() {
             poiSpots,
             poiHotels,
             poiActivities,
-            aiPromptInput
+            aiPromptInput,
+            carDB 
         );
 
         if (result && result.itinerary) {
+             let effectiveDestinations = settings.destinations;
              if (result.detectedDestinations && result.detectedDestinations.length > 0) {
+                 effectiveDestinations = result.detectedDestinations;
                  setSettings(prev => ({ ...prev, destinations: result.detectedDestinations }));
              }
 
+             if (result.startDate) {
+                  setSettings(prev => ({ ...prev, startDate: result.startDate! }));
+             }
+
+             let effectivePeople = settings.peopleCount;
+             let effectiveRooms = settings.roomCount;
+             if (result.peopleCount !== undefined) effectivePeople = result.peopleCount;
+             if (result.roomCount !== undefined) effectiveRooms = result.roomCount; 
+             else if (result.peopleCount !== undefined) effectiveRooms = Math.ceil(effectivePeople / 2);
+             
+             let effectiveRoomType = result.roomType || '标准间';
+             let effectiveTicketCount = result.ticketCount !== undefined ? result.ticketCount : effectivePeople;
+
+             if (result.peopleCount !== undefined || result.roomCount !== undefined) {
+                  setSettings(prev => ({ ...prev, peopleCount: effectivePeople, roomCount: effectiveRooms }));
+             }
+             
+             const extractedCarModel = result.carModel;
              const newRows = [...rows];
              const maxDay = Math.max(...result.itinerary.map(i => i.day));
              if (maxDay > newRows.length) {
-                 for(let i = newRows.length; i < maxDay; i++) {
-                     newRows.push(createEmptyRow(i + 1));
-                 }
+                 for(let i = newRows.length; i < maxDay; i++) newRows.push(createEmptyRow(i + 1));
+             } else if (result.isFullReplacement && maxDay < newRows.length && maxDay > 0) {
+                 newRows.splice(maxDay);
              }
 
              result.itinerary.forEach(item => {
@@ -940,9 +945,32 @@ export default function App() {
                      if (item.origin && item.destination) {
                          routeStr = `${item.origin}-${item.destination}`;
                      }
-                     const ticketItems: GeneralItem[] = item.ticketName ? item.ticketName.split(/[,，、]/).map(s => ({ id: generateUUID(), name: s.trim(), quantity: settings.peopleCount, price: 0, sourcePublic: false })) : currentRow.ticketDetails;
-                     const activityItems: GeneralItem[] = item.activityName ? item.activityName.split(/[,，、]/).map(s => ({ id: generateUUID(), name: s.trim(), quantity: settings.peopleCount, price: 0, sourcePublic: false })) : currentRow.activityDetails;
-                     const hotelItems: HotelItem[] = item.hotelName ? [{ id: generateUUID(), name: item.hotelName, roomType: '标准间', quantity: settings.roomCount, price: 0, sourcePublic: false }] : currentRow.hotelDetails;
+                     const ticketItems: GeneralItem[] = item.ticketName ? item.ticketName.split(/[,，、]/).map(s => ({ id: generateUUID(), name: s.trim(), quantity: effectiveTicketCount, price: 0, sourcePublic: false })) : currentRow.ticketDetails;
+                     const activityItems: GeneralItem[] = item.activityName ? item.activityName.split(/[,，、]/).map(s => ({ id: generateUUID(), name: s.trim(), quantity: effectivePeople, price: 0, sourcePublic: false })) : currentRow.activityDetails;
+                     
+                     let hotelItems: HotelItem[] = currentRow.hotelDetails;
+                     if (item.hotelName) {
+                         hotelItems = generateHotelDetails(item.hotelName, effectivePeople, effectiveRooms, effectiveRoomType);
+                     } else if (result.roomCount !== undefined || result.peopleCount !== undefined) {
+                         if (currentRow.hotelDetails.length === 1) {
+                             const existingName = currentRow.hotelDetails[0].name;
+                             hotelItems = generateHotelDetails(existingName, effectivePeople, effectiveRooms, effectiveRoomType);
+                         }
+                     }
+                     
+                     let transportItems = currentRow.transportDetails;
+                     let currentTransportTypes = currentRow.transport;
+                     const relevantCars = visibleCars.filter(c => effectiveDestinations.includes(c.region) || c.region === '通用');
+                     const carsPool = relevantCars.length > 0 ? relevantCars : visibleCars;
+                     let targetCarModel = extractedCarModel;
+                     let dbCar = carsPool.find(c => c.carModel === targetCarModel);
+                     if (!dbCar && carsPool.length > 0) { dbCar = carsPool[0]; targetCarModel = dbCar.carModel; }
+
+                     if (targetCarModel && dbCar) {
+                         let quantity = dbCar.passengers > 0 ? Math.ceil(effectivePeople / dbCar.passengers) : 1;
+                         transportItems = [{ id: generateUUID(), model: targetCarModel, serviceType: dbCar.serviceType, quantity: quantity, priceType: 'low', price: dbCar.priceLow, sourcePublic: dbCar.isPublic || !dbCar.createdBy }];
+                         if (!currentTransportTypes.includes(dbCar.serviceType)) currentTransportTypes = [...currentTransportTypes, dbCar.serviceType];
+                     }
 
                      newRows[idx] = {
                          ...currentRow,
@@ -950,14 +978,10 @@ export default function App() {
                          hotelDetails: hotelItems,
                          ticketDetails: ticketItems,
                          activityDetails: activityItems,
+                         transportDetails: transportItems, 
+                         transport: currentTransportTypes, 
                          description: item.description || currentRow.description,
-                         manualCostFlags: {
-                             ...currentRow.manualCostFlags,
-                             hotel: false,
-                             ticket: false,
-                             activity: false,
-                             transport: false 
-                         }
+                         manualCostFlags: { ...currentRow.manualCostFlags, hotel: false, ticket: false, activity: false, transport: false }
                      };
                  }
              });
@@ -967,7 +991,6 @@ export default function App() {
              setNotification({ show: true, message: 'AI 规划完成！请点击“刷新价格”以计算最新费用。' });
              setTimeout(() => setNotification({ show: false, message: '' }), 4000);
         } else {
-             // Should not reach here if we throw error, but just in case
              throw new Error("AI 返回了无效的行程数据");
         }
     } catch (e: any) {
@@ -980,64 +1003,139 @@ export default function App() {
     }
   };
 
+  // ... (Chat Handlers unchanged) ...
+  const handleChatFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) processChatFile(file);
+      e.target.value = ''; 
+  };
+  const handleChatPaste = (e: React.ClipboardEvent) => {
+      const items = e.clipboardData.items;
+      for (let i = 0; i < items.length; i++) {
+          if (items[i].type.indexOf("image") !== -1) {
+              const blob = items[i].getAsFile();
+              if (blob) processChatFile(blob);
+              e.preventDefault(); 
+              return;
+          }
+      }
+  };
+  const processChatFile = (file: File | Blob) => {
+      if (file.size > 10 * 1024 * 1024) { 
+          alert("文件大小不能超过 10MB");
+          return;
+      }
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+          const result = evt.target?.result as string; 
+          if (result) {
+              const base64Data = result.split(',')[1];
+              const mimeType = result.split(';')[0].split(':')[1];
+              setChatAttachment({ data: base64Data, mimeType, previewUrl: result });
+          }
+      };
+      reader.readAsDataURL(file);
+  };
+  const handleSendChat = async () => {
+      if ((!chatInput.trim() && !chatAttachment) || isChatLoading) return;
+      const userMsg = chatInput.trim();
+      const currentAttachment = chatAttachment; 
+      setChatInput('');
+      setChatAttachment(null); 
+      setChatMessages(prev => [...prev, { role: 'user', text: userMsg, attachment: currentAttachment?.previewUrl }]);
+      setIsChatLoading(true);
+      // NOTE: `askTravelAI` now internally fetches the latest Knowledge Base via StorageService, so we don't need to pass it here explicitly.
+      const aiResponse = await askTravelAI(userMsg, currentAttachment ? { data: currentAttachment.data, mimeType: currentAttachment.mimeType } : null);
+      setChatMessages(prev => [...prev, { role: 'model', text: aiResponse.text, responseImages: aiResponse.images }]);
+      setIsChatLoading(false);
+  };
+
+  const handleLoginSuccess = async (u: User) => {
+      setCurrentUser(u);
+      setIsAppLoading(true);
+      await loadCloudData(u);
+      setIsAppLoading(false);
+      setNotification({ show: true, message: `欢迎回来, ${u.username}` });
+      setTimeout(() => setNotification({ show: false, message: '' }), 3000);
+  };
+
+  // --- RENDER CONDITIONAL ---
+  if (isAppLoading) {
+      return (
+          <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 text-blue-600 gap-4">
+              <Loader2 size={48} className="animate-spin"/>
+              <div className="text-sm font-medium text-gray-500">正在启动星艾旅行助手...</div>
+          </div>
+      );
+  }
+
+  if (!currentUser) {
+      return <AuthModal onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  // --- MAIN APP (Only rendered if logged in) ---
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-gray-900">
-      <div className="bg-white border-b border-gray-200 px-6 py-3 flex justify-between items-center shadow-sm z-40 sticky top-0 no-print">
-        {/* ... Header content ... */}
-        <div className="flex items-center gap-4">
+      {/* ... (Header) ... */}
+      <div className="bg-white border-b border-gray-200 px-4 md:px-6 py-3 shadow-sm z-40 sticky top-0 no-print flex flex-col md:flex-row justify-between items-center gap-3">
+        <div className="flex w-full md:w-auto justify-between md:justify-start items-center gap-4">
            <h1 className="text-xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent flex items-center gap-2">
-             <Rocket size={24} className="text-blue-600" /> 星际云旅行
+             <img src="https://img.icons8.com/fluency/96/astronaut.png" alt="Logo" className="w-8 h-8" />
+             <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">星艾-专业旅行定制师</span>
            </h1>
+           <div className="md:hidden flex items-center gap-2">
+                <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 font-bold text-xs">{currentUser.username.substring(0, 2).toUpperCase()}</div>
+                </div>
+           </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-between md:justify-end">
            <div className="flex items-center gap-2">
               <button onClick={handleNewTrip} className="p-2 hover:bg-gray-100 rounded text-gray-600" title="新建"><FileUp size={18}/></button>
-              <button onClick={handleOpenSavedList} className="p-2 hover:bg-gray-100 rounded text-gray-600 flex items-center gap-1">
-                  {isRefreshingTrips ? <Loader2 size={18} className="animate-spin text-blue-600"/> : <FolderOpen size={18}/>}
-              </button>
+              <button onClick={handleOpenSavedList} className="p-2 hover:bg-gray-100 rounded text-gray-600 flex items-center gap-1">{isRefreshingTrips ? <Loader2 size={18} className="animate-spin text-blue-600"/> : <FolderOpen size={18}/>}</button>
               <button onClick={handleOpenSaveModal} className="p-2 hover:bg-gray-100 rounded text-blue-600" title="保存"><Save size={18}/></button>
               <button onClick={handleExport} className="p-2 hover:bg-gray-100 rounded text-green-600" title="导出"><FileSpreadsheet size={18}/></button>
            </div>
-           <div className="h-6 w-px bg-gray-300 mx-2"></div>
-           <button onClick={handleOpenResources} className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 text-sm font-medium transition-colors">
-               {isRefreshingResources ? <Loader2 size={16} className="animate-spin"/> : <Database size={16}/>} 资源库
-           </button>
-           <button onClick={() => setShowAIModal(true)} className="flex items-center gap-1 px-3 py-1.5 bg-purple-50 text-purple-700 rounded hover:bg-purple-100 text-sm font-medium"><Sparkles size={16}/> AI 规划</button>
-        </div>
-        <div className="flex items-center gap-4">
-            {notification.show && <div className="text-sm text-green-600 font-medium animate-fade-in bg-green-50 px-3 py-1 rounded-full flex items-center gap-1"><CheckCircle size={14}/> {notification.message}</div>}
-            <div className={`text-xs px-2 py-1 rounded flex items-center gap-1 ${cloudStatus === 'synced' ? 'text-green-600 bg-green-50' : cloudStatus === 'error' ? 'text-red-600 bg-red-50' : 'text-gray-400'}`}>
-                <Cloud size={12}/> {cloudStatus === 'synced' ? '已同步' : cloudStatus === 'syncing' ? '同步中...' : '未同步'}
-            </div>
-            {currentUser ? (
-                <div className="flex items-center gap-3">
-                   {isSuperAdmin && <button onClick={() => setShowAdminDashboard(true)} className="text-gray-500 hover:text-red-600" title="管理员后台"><ShieldAlert size={18}/></button>}
-                   <div className="flex flex-col items-end leading-tight">
-                       <span className="text-sm font-medium">{currentUser.username}</span>
-                       <span className="text-[10px] text-gray-400">
-                           {currentUser.role === 'super_admin' ? '超级管理员' : currentUser.role === 'admin' ? '管理员' : '普通会员'}
-                       </span>
-                   </div>
-                   <button onClick={() => { AuthService.logout(); setCurrentUser(null); window.location.reload(); }} className="text-gray-400 hover:text-gray-600"><LogOut size={18}/></button>
+           
+           <div className="h-6 w-px bg-gray-300 mx-1 hidden md:block"></div>
+           
+           <div className="flex items-center gap-2">
+               <button onClick={handleOpenResources} className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 text-sm font-medium transition-colors whitespace-nowrap">{isRefreshingResources ? <Loader2 size={16} className="animate-spin"/> : <Database size={16}/>} <span className="hidden sm:inline">资源库</span></button>
+               <button onClick={() => setShowAIModal(true)} className="flex items-center gap-1 px-3 py-1.5 bg-purple-50 text-purple-700 rounded hover:bg-purple-100 text-sm font-medium whitespace-nowrap"><Sparkles size={16}/> <span className="hidden sm:inline">AI 规划</span></button>
+           </div>
+
+           <div className="hidden md:flex items-center gap-4 ml-2">
+                {notification.show && <div className="text-sm text-green-600 font-medium animate-fade-in bg-green-50 px-3 py-1 rounded-full flex items-center gap-1"><CheckCircle size={14}/> {notification.message}</div>}
+                <div className={`text-xs px-2 py-1 rounded flex items-center gap-1 ${cloudStatus === 'synced' ? 'text-green-600 bg-green-50' : cloudStatus === 'error' ? 'text-red-600 bg-red-50' : 'text-gray-400'}`}>
+                    <Cloud size={12}/> {cloudStatus === 'synced' ? '已同步' : cloudStatus === 'syncing' ? '同步...' : '未同步'}
                 </div>
-            ) : (
-                <button onClick={() => setShowAuthModal(true)} className="text-sm font-medium text-blue-600 hover:underline">登录 / 注册</button>
-            )}
+                <div className="flex items-center gap-3">
+                {isSuperAdmin && <button onClick={() => setShowAdminDashboard(true)} className="text-gray-500 hover:text-red-600" title="管理员后台"><ShieldAlert size={18}/></button>}
+                <div className="flex flex-col items-end leading-tight">
+                    <span className="text-sm font-medium">{currentUser.username}</span>
+                    <span className="text-[10px] text-gray-400">{currentUser.role === 'super_admin' ? '超级管理员' : currentUser.role === 'admin' ? '管理员' : '普通会员'}</span>
+                </div>
+                <button onClick={() => { AuthService.logout(); setCurrentUser(null); window.location.reload(); }} className="text-gray-400 hover:text-gray-600"><LogOut size={18}/></button>
+                </div>
+           </div>
         </div>
       </div>
 
-      <div className="flex-1 p-6 overflow-auto">
+      <div className="flex-1 p-2 md:p-6 overflow-auto">
         <GlobalSettings settings={settings} updateSettings={(s) => setSettings(prev => ({...prev, ...s}))} availableCountries={Array.from(new Set(poiCities.filter(isResourceVisible).map(c => c.country)))} />
-        
+        {/* ... Main Table ... */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="overflow-x-auto pb-32"> {/* Extra padding for dropdowns */}
+            <div className="overflow-x-auto pb-32"> 
                 <table className="w-full text-sm text-left border-collapse">
                     <thead className="bg-gray-50 text-gray-500 font-medium border-b border-gray-200">
                         <tr>
                             {Th('day', 'Day', 'bg-gray-50', 'text-gray-500', true)}
                             {Th('date', '日期')}
                             {Th('route', '路线')}
+                            {Th('description', '详情')}
                             {Th('transport', '交通/车型')}
                             {Th('hotel', '酒店/房型')}
-                            {Th('description', '详情')}
                             {Th('ticket', '门票')}
                             {Th('activity', '活动')}
                             {Th('otherService', '其它服务')}
@@ -1051,8 +1149,12 @@ export default function App() {
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                         {rows.map((row, index) => {
-                            const destinationCityIds = getDestinationCityIds(row.route); 
+                            // Extract route cities and determine arrival city
                             const routeCities = extractCitiesFromRoute(row.route);
+                            const currentDestCityName = routeCities.length > 0 ? routeCities[routeCities.length - 1] : null;
+                            const currentDestCityIds = currentDestCityName ? getMatchingCityIds(currentDestCityName, poiCities) : [];
+                            
+                            // Determine relevant city IDs for Spots/Activities (All cities in route)
                             let relevantCityIds: string[] = [];
                             if (routeCities.length > 0) {
                                 relevantCityIds = routeCities.flatMap(name => getMatchingCityIds(name, poiCities));
@@ -1063,17 +1165,32 @@ export default function App() {
                             }
                             relevantCityIds = Array.from(new Set(relevantCityIds));
 
-                            // Options filtering
-                            // MODIFIED: Filter cars by selected transport types in the row
+                            // FILTER CARS
+                            // Logic: Show cars if they belong to Global Destinations OR Current Route Cities OR are Generic.
+                            // AND if they match the selected Transport Types (Service Types) for this row.
                             const visibleCars = carDB.filter(c => 
                                 isResourceVisible(c) && 
-                                (settings.destinations.includes(c.region) || c.region === '通用') &&
+                                (settings.destinations.includes(c.region) || c.region === '通用' || routeCities.includes(c.region)) &&
                                 (row.transport.length === 0 || row.transport.includes(c.serviceType))
                             );
 
-                            const visibleHotels = poiHotels.filter(isResourceVisible);
-                            let hotelOptions = destinationCityIds.length > 0 ? visibleHotels.filter(h => destinationCityIds.includes(h.cityId)) : visibleHotels;
+                            // FILTER HOTELS
+                            // Logic: Filter by destination city if known. Fallback to Country.
+                            const allVisibleHotels = poiHotels.filter(isResourceVisible);
+                            let hotelOptions = allVisibleHotels;
+
+                            if (currentDestCityIds.length > 0) {
+                                // Strict filter: Arrival City
+                                hotelOptions = allVisibleHotels.filter(h => currentDestCityIds.includes(h.cityId));
+                            } else if (settings.destinations.length > 0) {
+                                // Fallback filter: Selected Countries
+                                const validCityIds = poiCities
+                                    .filter(c => settings.destinations.includes(c.country))
+                                    .map(c => c.id);
+                                hotelOptions = allVisibleHotels.filter(h => validCityIds.includes(h.cityId));
+                            }
                             const uniqueHotelNames = Array.from(new Set(hotelOptions.map(h => h.name)));
+
                             const validSpots = poiSpots.filter(s => (relevantCityIds.includes(s.cityId) || !s.cityId) && isResourceVisible(s));
                             const validActivities = poiActivities.filter(a => (relevantCityIds.includes(a.cityId) || !a.cityId) && isResourceVisible(a));
                             const validOthers = poiOthers.filter(o => settings.destinations.includes(o.country) && isResourceVisible(o));
@@ -1082,17 +1199,35 @@ export default function App() {
                             <tr key={row.id} className="hover:bg-blue-50/30 group align-top">
                                 <td className="p-2 sticky left-0 bg-white group-hover:bg-blue-50/30 z-10 font-medium text-center text-gray-400">{row.dayIndex}</td>
                                 <td className="p-2"><input type="date" className="w-full border-none bg-transparent p-0 text-gray-600 text-xs focus:ring-0" value={row.date} onChange={(e) => { if (index === 0) setSettings(prev => ({ ...prev, startDate: e.target.value })); else updateRow(index, { date: e.target.value }); }} /></td>
-                                <td className="p-2"><div className="flex items-center justify-between gap-1"><div className="flex-1"><Autocomplete value={row.route} onChange={(val) => handleRouteUpdate(index, val)} suggestions={allowedCityNames} placeholder="城市-城市" separator="-" /></div><button tabIndex={-1} onClick={() => handleQuickSave('route', index)} className="opacity-0 group-hover:opacity-100 text-blue-300 hover:text-blue-600 transition-opacity"><PlusCircle size={14}/></button></div></td>
+                                <td className="p-2"><Autocomplete value={row.route} onChange={(val) => handleRouteUpdate(index, val)} suggestions={allowedCityNames} placeholder="城市-城市" separator="-" /></td>
                                 
+                                <td className="p-2"><textarea className="w-full border-none bg-transparent p-0 text-sm focus:ring-0 resize-y min-h-[4rem]" rows={3} value={row.description} onChange={(e) => updateRow(index, { description: e.target.value })} /></td>
+
                                 {/* Transport Column */}
                                 <td className="p-2">
                                     <MultiSelect options={Object.values(TransportType)} value={row.transport} onChange={(v) => updateRow(index, { transport: v })} className="w-full mb-2" />
                                     <div className="space-y-1">
                                         {row.transportDetails.map(item => (
                                             <div key={item.id} className="flex items-center gap-1 bg-gray-50 p-1 rounded border border-gray-200 text-xs">
-                                                <select className="flex-1 bg-transparent border-none p-0 text-xs w-20" value={item.model} onChange={(e) => updateTransportItem(index, item.id, { model: e.target.value })}>
-                                                     <option value="">选择车型/交通</option>
-                                                     {visibleCars.map(c => <option key={c.id} value={c.carModel}>{c.carModel}</option>)}
+                                                <select 
+                                                    className="flex-1 bg-transparent border-none p-0 text-xs w-28 min-w-0" 
+                                                    value={item.serviceType ? `${item.model}|${item.serviceType}` : item.model} 
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        if (val.includes('|')) {
+                                                            const [m, s] = val.split('|');
+                                                            updateTransportItem(index, item.id, { model: m, serviceType: s });
+                                                        } else {
+                                                            updateTransportItem(index, item.id, { model: val });
+                                                        }
+                                                    }}
+                                                >
+                                                     <option value="">选择车型</option>
+                                                     {visibleCars.map(c => (
+                                                        <option key={c.id} value={`${c.carModel}|${c.serviceType}`}>
+                                                            {c.carModel} ({c.serviceType})
+                                                        </option>
+                                                     ))}
                                                 </select>
                                                 <span className="text-gray-400">x</span>
                                                 <input type="number" min="1" className="w-8 p-0 border-none bg-transparent text-center text-xs" value={item.quantity} onChange={(e) => updateTransportItem(index, item.id, { quantity: parseInt(e.target.value)||1 })} />
@@ -1119,7 +1254,7 @@ export default function App() {
                                                  <div className="flex items-center gap-1">
                                                      <select className="flex-1 bg-transparent border-gray-200 rounded text-[10px] p-0.5 h-6" value={item.roomType} onChange={(e) => updateHotelItem(index, item.id, { roomType: e.target.value })}>
                                                           <option value="">房型...</option>
-                                                          {visibleHotels.filter(h => h.name === item.name).map(h => <option key={h.id} value={h.roomType}>{h.roomType}</option>)}
+                                                          {allVisibleHotels.filter(h => h.name === item.name).map(h => <option key={h.id} value={h.roomType}>{h.roomType}</option>)}
                                                      </select>
                                                      <span className="text-gray-400 text-[10px]">x</span>
                                                      <input type="number" min="0" className="w-8 p-0 border-none bg-transparent text-center text-xs" value={item.quantity} onChange={(e) => updateHotelItem(index, item.id, { quantity: parseInt(e.target.value)||0 })} />
@@ -1128,12 +1263,8 @@ export default function App() {
                                          ))}
                                          <button onClick={() => addHotelItem(index)} className="text-xs text-blue-500 flex items-center gap-1 hover:underline"><Plus size={10}/> 添加房间</button>
                                     </div>
-                                    <button tabIndex={-1} onClick={() => handleQuickSave('hotel', index)} className="absolute right-1 top-2 opacity-0 group-hover/cell:opacity-100 text-blue-300 hover:text-blue-600"><PlusCircle size={14}/></button>
                                 </td>
-
-                                <td className="p-2"><textarea className="w-full border-none bg-transparent p-0 text-sm focus:ring-0 resize-y min-h-[4rem]" rows={3} value={row.description} onChange={(e) => updateRow(index, { description: e.target.value })} /></td>
-
-                                {/* Ticket Column */}
+                                
                                 <td className="p-2 relative group/cell">
                                     <div className="space-y-1">
                                         {row.ticketDetails.map(item => (
@@ -1146,10 +1277,8 @@ export default function App() {
                                         ))}
                                         <button onClick={() => addGeneralItem(index, 'ticket')} className="text-xs text-blue-500 flex items-center gap-1 hover:underline"><Plus size={10}/> 添加门票</button>
                                     </div>
-                                    <button tabIndex={-1} onClick={() => handleQuickSave('ticket', index)} className="absolute right-1 top-2 opacity-0 group-hover/cell:opacity-100 text-blue-300 hover:text-blue-600"><PlusCircle size={14}/></button>
                                 </td>
 
-                                {/* Activity Column */}
                                 <td className="p-2 relative group/cell">
                                     <div className="space-y-1">
                                         {row.activityDetails.map(item => (
@@ -1162,10 +1291,8 @@ export default function App() {
                                         ))}
                                         <button onClick={() => addGeneralItem(index, 'activity')} className="text-xs text-blue-500 flex items-center gap-1 hover:underline"><Plus size={10}/> 添加活动</button>
                                     </div>
-                                    <button tabIndex={-1} onClick={() => handleQuickSave('activity', index)} className="absolute right-1 top-2 opacity-0 group-hover/cell:opacity-100 text-blue-300 hover:text-blue-600"><PlusCircle size={14}/></button>
                                 </td>
 
-                                {/* Other Services Column */}
                                 <td className="p-2">
                                      <div className="space-y-1">
                                         {row.otherDetails.map(item => (
@@ -1204,9 +1331,10 @@ export default function App() {
                     </tfoot>
                 </table>
             </div>
-            <div className="p-3 bg-gray-50 border-t flex justify-center"><button onClick={() => setRows([...rows, createEmptyRow(rows.length + 1)])} className="text-blue-600 flex items-center gap-1 hover:bg-blue-100 px-4 py-2 rounded transition-colors font-medium"><Plus size={16}/> 添加一天</button><button onClick={handleRefreshCosts} className="ml-4 text-green-600 flex items-center gap-1 hover:bg-green-100 px-4 py-2 rounded transition-colors font-medium"><RefreshCw size={16}/> 刷新价格</button></div>
+            <div className="p-3 bg-gray-50 border-t flex flex-col sm:flex-row justify-center gap-3"><button onClick={() => setRows([...rows, createEmptyRow(rows.length + 1)])} className="text-blue-600 flex items-center justify-center gap-1 hover:bg-blue-100 px-4 py-2 rounded transition-colors font-medium w-full sm:w-auto"><Plus size={16}/> 添加一天</button><button onClick={handleRefreshCosts} className="ml-0 sm:ml-4 text-green-600 flex items-center justify-center gap-1 hover:bg-green-100 px-4 py-2 rounded transition-colors font-medium w-full sm:w-auto"><RefreshCw size={16}/> 刷新价格</button></div>
         </div>
-        {/* ... Rest of components ... */}
+        
+        {/* ... Rest of Body (Inclusions/Exclusions) ... */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6 no-print">
             <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
                 <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2"><CheckCircle size={16} className="text-green-600"/> 费用包含</h3>
@@ -1219,20 +1347,22 @@ export default function App() {
         </div>
       </div>
 
-      {showAuthModal && <AuthModal onLoginSuccess={async (u) => { setCurrentUser(u); setShowAuthModal(false); setIsAppLoading(true); await loadCloudData(u); setIsAppLoading(false); setNotification({ show: true, message: `欢迎回来, ${u.username}` }); setTimeout(() => setNotification({ show: false, message: '' }), 3000); }} />}
       {showAdminDashboard && currentUser && <AdminDashboard currentUser={currentUser} onClose={() => setShowAdminDashboard(false)} />}
       <ResourceDatabase 
         isOpen={isResourceOpen} onClose={() => setIsResourceOpen(false)}
         carDB={carDB} poiCities={poiCities} poiSpots={poiSpots} poiHotels={poiHotels} poiActivities={poiActivities} poiOthers={poiOthers} countryFiles={countryFiles}
+        resourceFiles={resourceFiles} // NEW
         onUpdateCarDB={setCarDB} onUpdatePoiCities={setPoiCities} onUpdatePoiSpots={setPoiSpots} onUpdatePoiHotels={setPoiHotels} onUpdatePoiActivities={setPoiActivities} onUpdatePoiOthers={setPoiOthers} onUpdateCountryFiles={setCountryFiles}
+        onUpdateResourceFiles={setResourceFiles} // NEW
         isReadOnly={false} 
         currentUser={currentUser}
         onActivity={handleResourceActivity}
         onForceSave={handleForceSave}
       />
+      {/* ... Modals (Save, Load, AI, Chat) ... */}
       {showSaveModal && (<div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center"><div className="bg-white p-6 rounded-lg shadow-xl w-96"><h3 className="text-lg font-bold mb-4">保存行程</h3><div className="mb-4"><label className="block text-sm font-medium text-gray-700 mb-1">行程名称</label><input type="text" className="w-full border border-gray-300 rounded p-2" value={saveName} onChange={(e) => setSaveName(e.target.value)} /></div><div className="flex justify-end gap-2"><button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={handleConfirmSave} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">确认保存</button></div></div></div>)}
       {showSavedList && (<div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"><div className="bg-white rounded-xl shadow-xl w-full max-w-4xl h-[80vh] flex flex-col"><div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl"><h3 className="font-bold text-lg flex items-center gap-2"><Library size={20}/> 我的行程库</h3><button onClick={() => setShowSavedList(false)}><X size={24} className="text-gray-400 hover:text-gray-600"/></button></div><div className="p-4 border-b bg-white"><div className="relative"><Search size={16} className="absolute left-3 top-3 text-gray-400"/><input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg" placeholder="搜索..." value={tripSearchTerm} onChange={(e) => setTripSearchTerm(e.target.value)} /></div></div><div className="flex-1 overflow-auto p-4 bg-gray-50"><div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{savedTrips.filter(t => (isSuperAdmin || t.isPublic || t.createdBy === currentUser?.username || (!t.createdBy && true)) && (t.name.includes(tripSearchTerm) || t.settings.destinations.join('').includes(tripSearchTerm))).map(trip => (<div key={trip.id} onClick={() => handleLoadTrip(trip)} className="bg-white p-4 rounded-lg border border-gray-200 hover:shadow-md cursor-pointer transition-shadow group relative"><div className="flex justify-between items-start mb-2"><h4 className="font-bold text-blue-700 line-clamp-1">{trip.name}</h4>{(isSuperAdmin || trip.createdBy === currentUser?.username) && (<button onClick={(e) => { e.stopPropagation(); if(window.confirm(`确认删除?`)) setSavedTrips(savedTrips.filter(t => t.id !== trip.id)); }} className="text-gray-300 hover:text-red-500 p-1"><Trash2 size={14}/></button>)}</div><div className="text-xs text-gray-500 space-y-1"><p>{trip.rows.length}天</p><p>{trip.createdBy || 'Unknown'} {trip.isPublic ? '(公有)' : '(私有)'}</p></div></div>))}</div></div></div></div>)}
-      {qsModal && (<div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center"><div className="bg-white p-6 rounded-lg shadow-xl w-96"><h3 className="text-lg font-bold mb-4 flex items-center gap-2"><Save size={18}/> 快速添加至资源库</h3><div className="space-y-4"><div className="p-3 bg-blue-50 rounded text-sm text-blue-800"><p className="font-bold">内容:</p><p className="mt-1">{qsModal.itemsDisplay}</p></div><div><label className="block text-sm font-medium text-gray-700 mb-1">归属国家</label><select className="w-full border border-gray-300 rounded p-2" value={qsSelectedCountry} onChange={(e) => setQsSelectedCountry(e.target.value)}><option value="">请选择...</option>{Array.from(new Set(poiCities.map(c => c.country))).map(c => (<option key={c} value={c}>{c}</option>))}</select></div></div><div className="flex justify-end gap-2 mt-6"><button onClick={() => setQsModal(null)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={performQuickSave} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">确认添加</button></div></div></div>)}
+      
       {showAIModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-[100] flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -1248,13 +1378,17 @@ export default function App() {
                 <div className="p-6 flex-1 overflow-y-auto">
                     <div className="space-y-4">
                         <div className="bg-purple-50 p-4 rounded-lg border border-purple-100">
-                             <h4 className="font-bold text-purple-800 text-sm mb-2">您可以这样问：</h4>
+                             <h4 className="font-bold text-purple-800 text-sm mb-2 leading-relaxed">
+                                我叫星艾，是一个专业的旅行定制师，我的优点是懂您，懂行程。懂成本。您可以这样问我：
+                             </h4>
                              <ul className="text-xs text-purple-700 space-y-1 list-disc list-inside">
-                                 <li>"帮我规划一个瑞士10天深度游，重点是滑雪和温泉"</li>
-                                 <li>"在第3天和第4天增加一些适合亲子游的活动"</li>
-                                 <li>"把当前的行程调整得更紧凑一些，把巴黎的购物行程加上"</li>
-                                 <li>"根据现在的资源库，推荐一条日本关西的经典路线"</li>
+                                 <li>“摩洛哥8天，卡萨布兰卡进出，3位，两个房间。”</li>
+                                 <li>“南美阿根廷，智利，巴西三国，去马丘比丘，普诺，圣保罗，伊瓜苏，玛瑙斯，20天，2位，利马进，布宜诺斯艾力斯出”</li>
+                                 <li>“春节6天，我要去避寒，北京往返，帮我找一个国家，设计行程。”</li>
                              </ul>
+                             <div className="mt-3 pt-3 border-t border-purple-200 text-xs text-purple-800 font-medium">
+                                使用的任何问题，可以联系联系我的父亲：微信 13917643020
+                             </div>
                         </div>
 
                         <div>
@@ -1275,17 +1409,8 @@ export default function App() {
                 </div>
 
                 <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-3">
-                    <button 
-                        onClick={() => setShowAIModal(false)}
-                        className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg text-sm font-medium transition-colors"
-                    >
-                        取消
-                    </button>
-                    <button 
-                        onClick={handleAIPlanning}
-                        disabled={isGenerating || !aiPromptInput.trim()}
-                        className="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
-                    >
+                    <button onClick={() => setShowAIModal(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-200 rounded-lg text-sm font-medium transition-colors">取消</button>
+                    <button onClick={handleAIPlanning} disabled={isGenerating || !aiPromptInput.trim()} className="px-6 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium flex items-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm">
                         {isGenerating ? <Loader2 size={16} className="animate-spin"/> : <Wand2 size={16}/>}
                         {isGenerating ? '正在思考中...' : '开始生成'}
                     </button>
@@ -1293,6 +1418,125 @@ export default function App() {
             </div>
         </div>
       )}
+
+      {/* --- Floating Chat Widget --- */}
+      <div className="fixed bottom-6 right-6 z-[90] flex flex-col items-end gap-4 no-print">
+          {isChatOpen && (
+              <div className="w-[95vw] sm:w-[900px] bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col animate-fade-in-up" style={{height: '800px', maxHeight: '90vh'}}>
+                  {/* Chat Header */}
+                  <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-4 text-white flex justify-between items-center shrink-0">
+                      <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center">
+                              <Sparkles size={16} className="text-yellow-300"/>
+                          </div>
+                          <div>
+                              <h4 className="font-bold text-sm">星艾旅行助手</h4>
+                              <p className="text-[10px] text-blue-100 opacity-90">支持图片/文件分析与修改 (Max 10MB)，随时问我</p>
+                          </div>
+                      </div>
+                      <button onClick={() => setIsChatOpen(false)} className="text-white/80 hover:text-white p-1 hover:bg-white/10 rounded transition-colors">
+                          <Minimize2 size={18}/>
+                      </button>
+                  </div>
+
+                  {/* Chat Messages */}
+                  <div className="flex-1 overflow-y-auto p-4 bg-gray-50 space-y-4">
+                      {chatMessages.map((msg, idx) => (
+                          <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                              {/* Attachment Preview in Message History */}
+                              {msg.attachment && (
+                                  <div className="mb-1 max-w-[200px]">
+                                      {msg.attachment.startsWith('data:image') ? (
+                                          <img src={msg.attachment} alt="attachment" className="rounded-lg shadow-sm border border-gray-200 max-h-40 object-cover" />
+                                      ) : (
+                                          <div className="bg-gray-100 border border-gray-200 rounded-lg p-3 flex items-center gap-2 text-sm text-gray-600">
+                                              <FileText size={20}/> 文件已发送
+                                          </div>
+                                      )}
+                                  </div>
+                              )}
+                              <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm whitespace-pre-wrap ${
+                                  msg.role === 'user' 
+                                  ? 'bg-blue-600 text-white rounded-tr-none' 
+                                  : 'bg-white text-gray-800 border border-gray-100 rounded-tl-none'
+                              }`}>
+                                  {msg.text}
+                              </div>
+                              {/* Model Generated Images */}
+                              {msg.responseImages && msg.responseImages.length > 0 && (
+                                  <div className="mt-2 grid grid-cols-2 gap-2 max-w-[85%]">
+                                      {msg.responseImages.map((imgBase64, imgIdx) => (
+                                          <img key={imgIdx} src={`data:image/png;base64,${imgBase64}`} alt="AI Generated" className="rounded-lg shadow-sm border border-gray-200 object-cover w-full h-auto" />
+                                      ))}
+                                  </div>
+                              )}
+                          </div>
+                      ))}
+                      {isChatLoading && (
+                          <div className="flex justify-start">
+                              <div className="bg-white border border-gray-100 rounded-2xl rounded-tl-none px-4 py-3 shadow-sm">
+                                  <div className="flex gap-1">
+                                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
+                                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-100"></span>
+                                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce delay-200"></span>
+                                  </div>
+                              </div>
+                          </div>
+                      )}
+                      <div ref={chatEndRef} />
+                  </div>
+
+                  {/* Attachment Preview Area */}
+                  {chatAttachment && (
+                      <div className="px-4 py-2 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+                          <div className="flex items-center gap-2 overflow-hidden">
+                              {chatAttachment.mimeType.startsWith('image/') ? (
+                                  <img src={chatAttachment.previewUrl} alt="preview" className="h-10 w-10 object-cover rounded border border-gray-200"/>
+                              ) : (
+                                  <div className="h-10 w-10 bg-gray-200 rounded flex items-center justify-center text-gray-500"><FileText size={20}/></div>
+                              )}
+                              <div className="flex flex-col truncate">
+                                  <span className="text-xs font-medium text-gray-700 truncate max-w-[150px]">已选择文件</span>
+                                  <span className="text-[10px] text-gray-400">{chatAttachment.mimeType}</span>
+                              </div>
+                          </div>
+                          <button onClick={() => { setChatAttachment(null); if(chatFileRef.current) chatFileRef.current.value=''; }} className="p-1 hover:bg-gray-200 rounded-full text-gray-500">
+                              <X size={16}/>
+                          </button>
+                      </div>
+                  )}
+
+                  {/* Chat Input */}
+                  <div className="p-3 bg-white border-t border-gray-100 shrink-0">
+                      <div className="relative flex items-center gap-2">
+                          <input type="file" ref={chatFileRef} className="hidden" onChange={handleChatFileSelect} accept="image/*,application/pdf,text/plain" />
+                          <button onClick={() => chatFileRef.current?.click()} className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors" title="上传图片或文件"><Paperclip size={20}/></button>
+                          
+                          <input 
+                              type="text" 
+                              className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all shadow-inner"
+                              placeholder="输入问题或粘贴图片..."
+                              value={chatInput}
+                              onChange={(e) => setChatInput(e.target.value)}
+                              onKeyDown={(e) => e.key === 'Enter' && handleSendChat()}
+                              onPaste={handleChatPaste}
+                              disabled={isChatLoading}
+                          />
+                          <button onClick={handleSendChat} disabled={(!chatInput.trim() && !chatAttachment) || isChatLoading} className="p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:bg-gray-300 transition-colors shadow-sm">
+                              {isChatLoading ? <Loader2 size={16} className="animate-spin"/> : <Send size={16} className="ml-0.5"/>}
+                          </button>
+                      </div>
+                  </div>
+              </div>
+          )}
+
+          {!isChatOpen && (
+              <button onClick={() => setIsChatOpen(true)} className="group flex items-center justify-center w-14 h-14 bg-gradient-to-br from-blue-600 to-indigo-700 text-white rounded-full shadow-lg hover:shadow-2xl hover:scale-110 transition-all duration-300 relative">
+                  <MessageCircle size={28} className="group-hover:rotate-12 transition-transform duration-300"/>
+                  <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white"></span>
+              </button>
+          )}
+      </div>
     </div>
   );
 }

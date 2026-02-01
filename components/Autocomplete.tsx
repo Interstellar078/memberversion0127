@@ -61,8 +61,8 @@ export const Autocomplete: React.FC<AutocompleteProps> = ({
         matches = staticSuggestions; 
     }
     
-    // Increased limit from 10 to 500 to support showing "all" cities in dropdown
-    matches = matches.slice(0, 500);
+    // Increased limit to 3000 to support large datasets (e.g. multiple countries selected)
+    matches = matches.slice(0, 3000);
 
     // Async fetcher support
     if (fetchSuggestions && query.length > 1) {
@@ -126,8 +126,8 @@ export const Autocomplete: React.FC<AutocompleteProps> = ({
                  matches = staticSuggestions;
              }
              
-             // Increased limit from 10 to 500
-             matches = matches.slice(0, 500);
+             // Increased limit to 3000
+             matches = matches.slice(0, 3000);
              
              if(matches.length > 0) {
                  setActiveSuggestions(matches);

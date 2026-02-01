@@ -45,9 +45,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
   return (
     <div className="fixed inset-0 bg-gray-900 bg-opacity-90 z-[100] flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-        <div className="bg-gradient-to-r from-blue-600 to-indigo-700 p-8 text-center">
-          <h2 className="text-2xl font-bold text-white mb-2">星际云旅行</h2>
-          <p className="text-blue-100 text-sm">行程定制报价核算系统</p>
+        <div className="bg-white p-8 text-center border-b border-gray-100">
+          <div className="flex justify-center mb-4">
+              <div className="w-20 h-20 bg-blue-50 rounded-full flex items-center justify-center shadow-inner">
+                <img src="https://img.icons8.com/fluency/96/astronaut.png" alt="Logo" className="w-16 h-16" />
+              </div>
+          </div>
+          <h2 className="text-2xl font-bold text-gray-800 mb-1">星艾-专业旅行定制师</h2>
+          <p className="text-gray-500 text-sm">Xing Ai Professional Travel Designer</p>
         </div>
         
         <div className="p-8">

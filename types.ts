@@ -20,6 +20,7 @@ export interface CostItem {
 export interface TransportItem {
   id: string;
   model: string; // Car Model Name
+  serviceType?: string; // New: Service Type to disambiguate pricing
   quantity: number; // Number of cars
   priceType: 'low' | 'high'; // Season
   price: number; // Unit price used
@@ -200,6 +201,20 @@ export interface CountryFile {
   uploadDate: number;
   createdBy?: string;
   isPublic?: boolean;
+}
+
+// NEW: Generic Resource File for Document Uploads
+export interface ResourceFile {
+  id: string;
+  country: string;
+  category: 'country' | 'transport' | 'hotel' | 'spot' | 'activity' | 'other';
+  fileName: string;
+  fileType: string; // mime type
+  fileSize: number;
+  data: string; // Base64 content
+  description: string; // Remarks
+  uploadedBy: string;
+  uploadTime: number;
 }
 
 export interface ResourceMetadata {

@@ -1,5 +1,5 @@
 
-import { SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, User, ResourceMetadata } from '../types';
+import { SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, User, ResourceMetadata, ResourceFile } from '../types';
 import { SupabaseManager } from './supabaseClient';
 
 const KEYS = {
@@ -8,8 +8,9 @@ const KEYS = {
   DB_SPOTS: 'travel_builder_db_poi_spots',
   DB_HOTELS: 'travel_builder_db_poi_hotels_v2',
   DB_ACTIVITIES: 'travel_builder_db_poi_activities',
-  DB_OTHERS: 'travel_builder_db_poi_others', // New Key
-  DB_FILES: 'travel_builder_db_country_files',
+  DB_OTHERS: 'travel_builder_db_poi_others', 
+  DB_FILES: 'travel_builder_db_country_files', // Legacy country maps
+  DB_RESOURCE_FILES: 'travel_builder_db_resource_files', // New Documents
   DB_METADATA: 'travel_builder_db_metadata', 
   HISTORY: 'travel_builder_history',
   LOCATIONS: 'travel_builder_locations_history',
@@ -23,37 +24,26 @@ const db = {
         if (!client) return defaultValue;
 
         try {
-            // FIX: Do NOT use .single(). 
-            // If multiple users (or Admin seeing all users) have rows with the same 'key',
-            // .single() throws an error, causing the app to fallback to empty data.
             const { data, error } = await client
                 .from('app_data')
                 .select('value, updated_at')
                 .eq('key', key)
-                .order('updated_at', { ascending: false }); // Get latest first
+                .order('updated_at', { ascending: false }); 
             
             if (error) {
                 console.error(`Database error fetching ${key}:`, error);
-                // PGRST116 is not thrown by .select(), but we check for empty data below
                 return defaultValue;
             }
             
             if (!data || data.length === 0) return defaultValue;
 
-            // STRATEGY: 
-            // 1. If it's an array type (like trips or resources), ideally we want to MERGE them 
-            //    so Admin sees everything.
-            // 2. If it's a setting object, we take the most recently updated one.
-            
             if (Array.isArray(defaultValue)) {
-                 // Merge all arrays found in all rows with this key
                  let merged: any[] = [];
                  data.forEach(row => {
                      if (Array.isArray(row.value)) {
                          merged = [...merged, ...row.value];
                      }
                  });
-                 // Deduplicate by ID if items have IDs
                  const seenIds = new Set();
                  const uniqueMerged = merged.filter((item: any) => {
                      if (item && item.id) {
@@ -64,12 +54,10 @@ const db = {
                      return true;
                  });
                  
-                 // If we found data but merge resulted in empty (unlikely), return default
                  if (data.length > 0 && uniqueMerged.length === 0 && merged.length > 0) return merged as T; 
                  if (uniqueMerged.length > 0) return uniqueMerged as T;
             }
 
-            // For non-array objects (like settings), return the most recent one (index 0 due to order desc)
             const latestVal = data[0].value;
             if (latestVal === null || latestVal === undefined) return defaultValue;
             
@@ -86,8 +74,6 @@ const db = {
         if (!client) throw new Error("No cloud connection");
 
         try {
-            // When saving, we try to upsert.
-            // Note: If RLS is strict, this might only update the row owned by the user.
             const { error } = await client
                 .from('app_data')
                 .upsert({ 
@@ -117,8 +103,9 @@ export const StorageService = {
   async getSpots(): Promise<PoiSpot[]> { return db.get(KEYS.DB_SPOTS, []); },
   async getHotels(): Promise<PoiHotel[]> { return db.get(KEYS.DB_HOTELS, []); },
   async getActivities(): Promise<PoiActivity[]> { return db.get(KEYS.DB_ACTIVITIES, []); },
-  async getOthers(): Promise<PoiOther[]> { return db.get(KEYS.DB_OTHERS, []); }, // New
+  async getOthers(): Promise<PoiOther[]> { return db.get(KEYS.DB_OTHERS, []); }, 
   async getFiles(): Promise<CountryFile[]> { return db.get(KEYS.DB_FILES, []); },
+  async getResourceFiles(): Promise<ResourceFile[]> { return db.get(KEYS.DB_RESOURCE_FILES, []); }, // New
   async getTrips(): Promise<SavedTrip[]> { return db.get(KEYS.HISTORY, []); },
   async getLocations(): Promise<string[]> { return db.get(KEYS.LOCATIONS, []); },
   
@@ -133,8 +120,9 @@ export const StorageService = {
   async saveSpots(data: PoiSpot[]): Promise<void> { return db.set(KEYS.DB_SPOTS, data); },
   async saveHotels(data: PoiHotel[]): Promise<void> { return db.set(KEYS.DB_HOTELS, data); },
   async saveActivities(data: PoiActivity[]): Promise<void> { return db.set(KEYS.DB_ACTIVITIES, data); },
-  async saveOthers(data: PoiOther[]): Promise<void> { return db.set(KEYS.DB_OTHERS, data); }, // New
+  async saveOthers(data: PoiOther[]): Promise<void> { return db.set(KEYS.DB_OTHERS, data); }, 
   async saveFiles(data: CountryFile[]): Promise<void> { return db.set(KEYS.DB_FILES, data); },
+  async saveResourceFiles(data: ResourceFile[]): Promise<void> { return db.set(KEYS.DB_RESOURCE_FILES, data); }, // New
   async saveTrips(data: SavedTrip[]): Promise<void> { return db.set(KEYS.HISTORY, data); },
   async saveLocations(data: string[]): Promise<void> { return db.set(KEYS.LOCATIONS, data); },
 
@@ -142,7 +130,6 @@ export const StorageService = {
   async getUserProfiles(): Promise<User[]> {
     const client = SupabaseManager.getClient();
     if (!client) return [];
-    // User profiles are unique per key suffix, so select/like is fine
     const { data } = await client.from('app_data').select('value').like('key', 'user_profile_%');
     return data?.map(d => d.value) || [];
   },
@@ -155,7 +142,6 @@ export const StorageService = {
     return db.delete(`user_profile_${username}`);
   },
   
-  // --- Admin Bootstrap ---
   async ensureAdminProfile(): Promise<void> {
       const adminKey = 'user_profile_admin';
       const existing = await db.get<User | null>(adminKey, null);
@@ -163,7 +149,7 @@ export const StorageService = {
           const adminUser: User = {
               username: 'admin',
               password: '', 
-              role: 'super_admin', // Default to super_admin
+              role: 'super_admin', 
               createdAt: Date.now()
           };
           console.log("Bootstrapping Super Admin User Profile...");
@@ -191,7 +177,8 @@ export const StorageService = {
           KEYS.DB_SPOTS,
           KEYS.DB_HOTELS,
           KEYS.DB_ACTIVITIES,
-          KEYS.DB_OTHERS, // New
+          KEYS.DB_OTHERS,
+          KEYS.DB_RESOURCE_FILES,
           KEYS.HISTORY,
           KEYS.LOCATIONS,
           KEYS.SETTINGS_GLOBAL,
@@ -200,7 +187,6 @@ export const StorageService = {
 
       for (const key of keysToMigrate) {
           try {
-              // Check if ANY row exists for this key
               const { data, error } = await client.from('app_data').select('key').eq('key', key).limit(1);
               
               const exists = data && data.length > 0;
