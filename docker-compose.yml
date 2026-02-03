@@ -37,6 +37,7 @@ services:
       - LOG_JSON=${LOG_JSON:-false}
     volumes:
       - backend_logs:/app/logs
+      - uploads_data:/app/uploads
     depends_on:
       - db
     restart: unless-stopped
@@ -57,3 +58,4 @@ services:
 volumes:
   postgres_data:
   backend_logs:
+  uploads_data:

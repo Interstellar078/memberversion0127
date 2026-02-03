@@ -969,9 +969,31 @@ export default function App() {
                             if (start && end) routeStr = `${start}-${end}`;
                         }
 
-                        const ticketItems: GeneralItem[] = normalizeList(item.ticketName).map(s => ({ id: generateUUID(), name: s, quantity: settings.peopleCount, price: 0, sourcePublic: false }));
-                        const activityItems: GeneralItem[] = normalizeList(item.activityName).map(s => ({ id: generateUUID(), name: s, quantity: settings.peopleCount, price: 0, sourcePublic: false }));
-                        const hotelItems: HotelItem[] = item.hotelName ? [{ id: generateUUID(), name: item.hotelName, roomType: '标准间', quantity: settings.roomCount, price: 0, sourcePublic: false }] : currentRow.hotelDetails;
+                        const ticketIds = Array.isArray(item.ticketIds) ? item.ticketIds : [];
+                        const activityIds = Array.isArray(item.activityIds) ? item.activityIds : [];
+                                        const ticketItems: GeneralItem[] = normalizeList(item.ticketName).map((s, i) => ({
+                            id: ticketIds[i] || generateUUID(),
+                            name: s,
+                            quantity: settings.peopleCount,
+                            price: 0,
+                            sourcePublic: false
+                        }));
+                        const activityItems: GeneralItem[] = normalizeList(item.activityName).map((s, i) => ({
+                            id: activityIds[i] || generateUUID(),
+                            name: s,
+                            quantity: settings.peopleCount,
+                            price: 0,
+                            sourcePublic: false
+                        }));
+                        const hotelItems: HotelItem[] = item.hotelName
+                            ? [{ id: item.hotelId || generateUUID(), name: item.hotelName, roomType: '标准间', quantity: settings.roomCount, price: 0, sourcePublic: false }]
+                            : currentRow.hotelDetails;
+
+                        const numTransportCost = Number.isFinite(Number(item.transportCost)) ? Number(item.transportCost) : null;
+                        const numHotelCost = Number.isFinite(Number(item.hotelCost)) ? Number(item.hotelCost) : null;
+                        const numTicketCost = Number.isFinite(Number(item.ticketCost)) ? Number(item.ticketCost) : null;
+                        const numActivityCost = Number.isFinite(Number(item.activityCost)) ? Number(item.activityCost) : null;
+                        const numOtherCost = Number.isFinite(Number(item.otherCost)) ? Number(item.otherCost) : null;
 
                         newRows[idx] = {
                             ...currentRow,
@@ -980,17 +1002,18 @@ export default function App() {
                             ticketDetails: ticketItems.length > 0 ? ticketItems : currentRow.ticketDetails,
                             activityDetails: activityItems.length > 0 ? activityItems : currentRow.activityDetails,
                             description: item.description || currentRow.description,
-                            transportCost: currentRow.transportCost,
-                            hotelCost: currentRow.hotelCost,
-                            ticketCost: currentRow.ticketCost,
-                            activityCost: currentRow.activityCost,
-                            otherCost: currentRow.otherCost,
+                            transportCost: numTransportCost !== null ? numTransportCost : currentRow.transportCost,
+                            hotelCost: numHotelCost !== null ? numHotelCost : currentRow.hotelCost,
+                            ticketCost: numTicketCost !== null ? numTicketCost : currentRow.ticketCost,
+                            activityCost: numActivityCost !== null ? numActivityCost : currentRow.activityCost,
+                            otherCost: numOtherCost !== null ? numOtherCost : currentRow.otherCost,
                             manualCostFlags: {
                                 ...currentRow.manualCostFlags,
-                                hotel: false,
-                                ticket: false,
-                                activity: false,
-                                transport: false
+                                hotel: (numHotelCost || 0) > 0,
+                                ticket: (numTicketCost || 0) > 0,
+                                activity: (numActivityCost || 0) > 0,
+                                transport: (numTransportCost || 0) > 0,
+                                other: (numOtherCost || 0) > 0
                             }
                         };
                     }

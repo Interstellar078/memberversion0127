@@ -1,4 +1,4 @@
-import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity } from '../types';
+import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, ResourceDocument } from '../types';
 import { getAuthToken } from './apiClient';
 
 const API_BASE = '/api/resources';
@@ -79,6 +79,31 @@ export const resourceApi = {
   updateActivity: (id: string, data: Partial<PoiActivity>) => fetchJson(`${API_BASE}/activities/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteActivity: (id: string) => fetchJson(`${API_BASE}/activities/${id}`, { method: 'DELETE' }),
 
+
+  listDocuments: (params: { category?: string; country?: string; city_id?: string } = {}): Promise<ResourceDocument[]> => {
+    const q = new URLSearchParams();
+    if (params.category) q.set('category', params.category);
+    if (params.country) q.set('country', params.country);
+    if (params.city_id) q.set('city_id', params.city_id);
+    return fetchJson(`${API_BASE}/documents?${q.toString()}`);
+  },
+  uploadDocument: async (payload: { file: File; category: string; country: string; cityId?: string; note?: string; title?: string }): Promise<ResourceDocument> => {
+    const token = getAuthToken();
+    const form = new FormData();
+    form.append('file', payload.file);
+    form.append('category', payload.category);
+    form.append('country', payload.country);
+    if (payload.cityId) form.append('city_id', payload.cityId);
+    if (payload.note) form.append('note', payload.note);
+    if (payload.title) form.append('title', payload.title);
+    const res = await fetch(`${API_BASE}/documents`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      body: form,
+    });
+    if (!res.ok) throw new Error(`API Error: ${res.statusText}`);
+    return res.json();
+  },
   listTransports: (params: { region?: string; search?: string; page?: number; size?: number; scope?: string } = {}) => {
     const q = new URLSearchParams();
     if (params.region) q.set('region', params.region);

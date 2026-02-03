@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     cors_origins: str = Field("", alias="CORS_ORIGINS")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     log_json: bool = Field(False, alias="LOG_JSON")
+    upload_dir: str = Field("/app/uploads", alias="UPLOAD_DIR")
 
     model_config = {
         "case_sensitive": False,

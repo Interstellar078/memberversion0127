@@ -8,9 +8,18 @@ export interface ItineraryItem {
   e_city?: string;
   transport?: string[];
   hotelName?: string | null;
+  hotelId?: string | null;
   ticketName?: string[] | string;
+  ticketIds?: string[] | null;
   activityName?: string[] | string;
+  activityIds?: string[] | null;
   description?: string | null;
+  transportIds?: string[] | null;
+  hotelCost?: number | null;
+  ticketCost?: number | null;
+  activityCost?: number | null;
+  transportCost?: number | null;
+  otherCost?: number | null;
 }
 
 export interface ItineraryResponse {

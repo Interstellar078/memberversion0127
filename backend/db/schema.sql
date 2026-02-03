@@ -113,6 +113,28 @@ create index if not exists idx_resource_transports_region on resource_transports
 create index if not exists idx_resource_transports_owner on resource_transports (owner_id);
 create index if not exists idx_resource_transports_public on resource_transports (is_public);
 
+create table if not exists resource_documents (
+  id varchar(50) primary key,
+  category varchar(30) not null,
+  country varchar(100) not null,
+  city_id varchar(50),
+  title varchar(255) not null,
+  file_name varchar(255) not null,
+  file_path varchar(255) not null,
+  mime_type varchar(100),
+  size integer not null default 0,
+  note text,
+  content_text text,
+  uploaded_by varchar(120) not null,
+  uploaded_at timestamptz not null default now()
+);
+
+create index if not exists idx_resource_documents_category on resource_documents (category);
+create index if not exists idx_resource_documents_country on resource_documents (country);
+create index if not exists idx_resource_documents_city on resource_documents (city_id);
+create index if not exists idx_resource_documents_uploaded_by on resource_documents (uploaded_by);
+create index if not exists idx_resource_documents_uploaded_at on resource_documents (uploaded_at desc);
+
 create table if not exists trips (
   id varchar(50) primary key,
   name varchar(200) not null,

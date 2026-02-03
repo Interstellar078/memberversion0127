@@ -134,3 +134,18 @@ class TransportOut(TransportBase):
     id: str
     owner_id: str
 
+
+
+class DocumentOut(CamelModel):
+    id: str
+    category: str
+    country: str
+    city_id: Optional[str] = None
+    title: str
+    file_name: str
+    mime_type: Optional[str] = None
+    size: int
+    note: Optional[str] = None
+    uploaded_by: str
+    uploaded_at: Optional[datetime] = None
+    download_url: Optional[str] = None

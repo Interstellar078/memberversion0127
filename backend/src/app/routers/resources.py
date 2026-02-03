@@ -1,14 +1,18 @@
 from datetime import datetime
 from typing import List, Optional, Type
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy import select, or_, func, desc
+from fastapi.responses import FileResponse
+from pathlib import Path
+import shutil
 from sqlalchemy.orm import Session
 import uuid
 
 from ..deps import get_db, get_current_user, get_current_user_optional
+from ..config import get_settings
 from ..models import (
     User, ResourceCountry, ResourceCity, ResourceSpot, ResourceHotel, 
-    ResourceActivity, ResourceTransport
+    ResourceActivity, ResourceTransport, ResourceDocument
 )
 from ..schemas_resources import (
     CountryOut, CountryCreate, CountryUpdate,
@@ -16,10 +20,14 @@ from ..schemas_resources import (
     SpotOut, SpotCreate, SpotUpdate,
     HotelOut, HotelCreate, HotelUpdate,
     ActivityOut, ActivityCreate, ActivityUpdate,
-    TransportOut, TransportCreate, TransportUpdate
+    TransportOut, TransportCreate, TransportUpdate, DocumentOut
 )
 
 router = APIRouter(prefix="/api/resources", tags=["resources"])
+
+settings = get_settings()
+UPLOAD_DIR = Path(settings.upload_dir)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Helper for Pagination ---
 def paginate_query(query, page: int, size: int):
@@ -44,6 +52,17 @@ def mask_prices_for_guest(items):
         elif isinstance(item, ResourceTransport):
             item.price_low = None
             item.price_high = None
+
+def require_admin_or_super(user: User) -> User:
+    if user.role not in ("admin", "super_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+def require_super_admin(user: User) -> User:
+    if user.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Super admin access required")
+    return user
 
 # --- Countries ---
 
@@ -461,3 +480,131 @@ def delete_transport(id: str, db: Session = Depends(get_db), current_user: User 
     db.delete(obj)
     db.commit()
     return {"success": True}
+
+# --- Documents ---
+@router.get("/documents", response_model=List[DocumentOut])
+def list_documents(
+    category: Optional[str] = None,
+    country: Optional[str] = None,
+    city_id: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    require_admin_or_super(current_user)
+    stmt = select(ResourceDocument)
+    if category:
+        stmt = stmt.where(ResourceDocument.category == category)
+    if country:
+        stmt = stmt.where(ResourceDocument.country == country)
+    if city_id:
+        stmt = stmt.where(ResourceDocument.city_id == city_id)
+    stmt = stmt.order_by(desc(ResourceDocument.uploaded_at))
+    rows = db.execute(stmt).scalars().all()
+
+    def to_out(doc: ResourceDocument) -> DocumentOut:
+        return DocumentOut(
+            id=doc.id,
+            category=doc.category,
+            country=doc.country,
+            city_id=doc.city_id,
+            title=doc.title,
+            file_name=doc.file_name,
+            mime_type=doc.mime_type,
+            size=doc.size,
+            note=doc.note,
+            uploaded_by=doc.uploaded_by,
+            uploaded_at=doc.uploaded_at,
+            download_url=f"/api/resources/documents/{doc.id}/download",
+        )
+
+    return [to_out(d) for d in rows]
+
+
+@router.post("/documents", response_model=DocumentOut)
+def upload_document(
+    file: UploadFile = File(...),
+    category: str = Form(...),
+    country: str = Form(...),
+    city_id: Optional[str] = Form(None),
+    note: Optional[str] = Form(None),
+    title: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    require_super_admin(current_user)
+    allowed = {"country", "hotel", "ticket", "activity", "transport"}
+    if category not in allowed:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    if not country:
+        raise HTTPException(status_code=400, detail="Country required")
+
+    safe_name = Path(file.filename or "document").name
+    ext = Path(safe_name).suffix
+    doc_id = str(uuid.uuid4())
+    stored_name = f"{doc_id}{ext}"
+    dest = UPLOAD_DIR / stored_name
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    file.file.close()
+
+    content_text: Optional[str] = None
+    if file.content_type and file.content_type.startswith("text/"):
+        try:
+            content_text = dest.read_text(encoding="utf-8", errors="ignore")[:5000]
+        except Exception:
+            content_text = None
+    elif ext.lower() in {".txt", ".md"}:
+        try:
+            content_text = dest.read_text(encoding="utf-8", errors="ignore")[:5000]
+        except Exception:
+            content_text = None
+
+    size = dest.stat().st_size if dest.exists() else 0
+    doc = ResourceDocument(
+        id=doc_id,
+        category=category,
+        country=country,
+        city_id=city_id or None,
+        title=title or safe_name,
+        file_name=safe_name,
+        file_path=str(dest),
+        mime_type=file.content_type,
+        size=size,
+        note=note,
+        content_text=content_text,
+        uploaded_by=current_user.username,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    return DocumentOut(
+        id=doc.id,
+        category=doc.category,
+        country=doc.country,
+        city_id=doc.city_id,
+        title=doc.title,
+        file_name=doc.file_name,
+        mime_type=doc.mime_type,
+        size=doc.size,
+        note=doc.note,
+        uploaded_by=doc.uploaded_by,
+        uploaded_at=doc.uploaded_at,
+        download_url=f"/api/resources/documents/{doc.id}/download",
+    )
+
+
+@router.get("/documents/{doc_id}/download")
+def download_document(
+    doc_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    require_admin_or_super(current_user)
+    doc = db.get(ResourceDocument, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    path = Path(doc.file_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File missing")
+    return FileResponse(path, filename=doc.file_name, media_type=doc.mime_type or "application/octet-stream")
+

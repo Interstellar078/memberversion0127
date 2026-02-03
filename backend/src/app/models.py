@@ -123,6 +123,24 @@ class ResourceTransport(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
 
 
+class ResourceDocument(Base):
+    __tablename__ = "resource_documents"
+    
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    category: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    country: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    city_id: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    file_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    uploaded_by: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+
 class Trip(Base):
     __tablename__ = "trips"
 

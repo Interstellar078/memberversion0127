@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Plus, Trash2, X, Car, Hotel, Globe, MapPin, Search, Ticket, Palmtree, PackagePlus, Eraser, ChevronRight } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, User } from '../types';
+import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, ResourceDocument, User } from '../types';
 import { generateUUID } from '../utils/dateUtils';
 import { resourceApi } from '../services/resourceApi';
 import { StorageService } from '../services/storageService';
@@ -72,6 +72,10 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
 
     const [resourceSearchTerm, setResourceSearchTerm] = useState('');
     const [resourceSearchLoading, setResourceSearchLoading] = useState(false);
+    const [docMap, setDocMap] = useState<Record<string, ResourceDocument[]>>({});
+    const [docUploadContext, setDocUploadContext] = useState<{ key: string; category: string; country: string; cityId?: string } | null>(null);
+    const loadedDocKeys = useRef(new Set<string>());
+    const loadingDocKeys = useRef(new Set<string>());
     const loadedCarRegions = useRef(new Set<string>());
     const loadingCarRegions = useRef(new Set<string>());
     const loadedOtherCountries = useRef(new Set<string>());
@@ -106,6 +110,8 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     // --- PERMISSION LOGIC ---
     const isSuperAdmin = currentUser?.role === 'super_admin' || currentUser?.role === 'admin';
     const isAdmin = currentUser?.role === 'admin';
+    const canViewDocs = currentUser?.role === 'admin' || currentUser?.role === 'super_admin';
+    const canUploadDocs = currentUser?.role === 'super_admin';
 
     const isVisible = (item: { createdBy?: string, isPublic?: boolean }) => {
         if (isSuperAdmin) return true;
@@ -134,6 +140,67 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
         return new Date(ts).toLocaleDateString();
     };
 
+    const formatDocDate = (iso?: string) => {
+        if (!iso) return '-';
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return iso;
+        return d.toLocaleString();
+    };
+
+    const renderDocsPanel = () => {
+        if (!docQuery || !canViewDocs) return null;
+        const key = docKey(docQuery.category, docQuery.country, docQuery.cityId);
+        const docs = docMap[key] ?? [];
+        return (
+            <div className="mb-4 bg-white border rounded-lg shadow-sm">
+                <div className="px-4 py-2 border-b flex items-center justify-between">
+                    <div className="text-sm font-medium text-gray-700">合作资料</div>
+                    {canUploadDocs && (
+                        <button onClick={triggerDocUpload} className="text-xs px-3 py-1 rounded border border-blue-300 text-blue-600 hover:bg-blue-50">
+                            上传资料
+                        </button>
+                    )}
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                            <tr>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">文件/标题</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">备注</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">上传人</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">上传时间</th>
+                                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500">下载</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-200">
+                            {docs.length === 0 ? (
+                                <tr>
+                                    <td className="px-4 py-3 text-sm text-gray-400" colSpan={5}>暂无资料</td>
+                                </tr>
+                            ) : (
+                                docs.map((doc) => (
+                                    <tr key={doc.id}>
+                                        <td className="px-4 py-2 text-sm text-gray-700">{doc.title || doc.fileName}</td>
+                                        <td className="px-4 py-2 text-sm text-gray-600">{doc.note || '-'}</td>
+                                        <td className="px-4 py-2 text-sm text-gray-600">{doc.uploadedBy || '-'}</td>
+                                        <td className="px-4 py-2 text-sm text-gray-600">{formatDocDate(doc.uploadedAt)}</td>
+                                        <td className="px-4 py-2 text-sm">
+                                            {doc.downloadUrl ? (
+                                                <a className="text-blue-600 hover:underline" href={doc.downloadUrl} target="_blank" rel="noreferrer">下载</a>
+                                            ) : (
+                                                '-'
+                                            )}
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        );
+    };
+
     // Filter Data based on visibility
     const visibleCountries = useMemo(() => {
         const s = new Set<string>();
@@ -160,7 +227,11 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
         if (!selectedCountry) return;
         const citiesForCountry = poiCities.filter(c => c.country === selectedCountry && isVisible(c));
         const firstCity = citiesForCountry[0]?.id;
-        setActiveSection(firstCity || 'transport');
+        setActiveSection((prev) => {
+            if (!prev || prev === 'transport' || prev === 'other') return firstCity || 'transport';
+            if (!citiesForCountry.some(c => c.id === prev)) return firstCity || 'transport';
+            return prev;
+        });
     }, [selectedCountry, poiCities, currentUser]);
 
     // Derived filtered lists
@@ -173,6 +244,40 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     const isOther = activeSection === 'other';
     const isCity = !isTransport && !isOther;
     const currentCityId = isCity ? activeSection : '';
+
+    const docKey = (category: string, country: string, cityId?: string) => `${category}|${country}|${cityId || ''}`;
+
+    const docQuery = useMemo(() => {
+        if (!selectedCountry) return null;
+        if (isTransport) return { category: 'transport', country: selectedCountry };
+        if (isOther) return { category: 'country', country: selectedCountry };
+        if (isCity && currentCityId) {
+            const category = poiTab === 'spot' ? 'ticket' : poiTab === 'hotel' ? 'hotel' : 'activity';
+            return { category, country: selectedCountry, cityId: currentCityId };
+        }
+        return null;
+    }, [selectedCountry, isTransport, isOther, isCity, currentCityId, poiTab]);
+
+    const loadDocuments = async (query: { category: string; country: string; cityId?: string }) => {
+        if (!canViewDocs) return;
+        const key = docKey(query.category, query.country, query.cityId);
+        if (loadedDocKeys.current.has(key) || loadingDocKeys.current.has(key)) return;
+        loadingDocKeys.current.add(key);
+        try {
+            const docs = await resourceApi.listDocuments({ category: query.category, country: query.country, city_id: query.cityId });
+            setDocMap((prev) => ({ ...prev, [key]: docs || [] }));
+            loadedDocKeys.current.add(key);
+        } catch (e) {
+            console.error('Failed to load documents', e);
+        } finally {
+            loadingDocKeys.current.delete(key);
+        }
+    };
+
+    useEffect(() => {
+        if (!isOpen || !docQuery || !canViewDocs) return;
+        loadDocuments(docQuery);
+    }, [isOpen, docQuery, canViewDocs]);
 
 
     useEffect(() => {
@@ -264,6 +369,46 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
         } finally {
             setResourceSearchLoading(false);
         }
+    };
+
+    const triggerDocUpload = () => {
+        if (!docQuery || !docUploadRef.current) return;
+        const key = docKey(docQuery.category, docQuery.country, docQuery.cityId);
+        setDocUploadContext({ key, category: docQuery.category, country: docQuery.country, cityId: docQuery.cityId });
+        docUploadRef.current.value = '';
+        docUploadRef.current.click();
+    };
+
+    const handleDocUploadChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const ctx = docUploadContext;
+        const files = Array.from(event.target.files ?? []);
+        if (!ctx || files.length === 0) return;
+        const note = window.prompt('备注(可选):')?.trim() || '';
+        const uploaded: ResourceDocument[] = [];
+        for (const file of files) {
+            try {
+                const doc = await resourceApi.uploadDocument({
+                    file,
+                    category: ctx.category,
+                    country: ctx.country,
+                    cityId: ctx.cityId,
+                    note: note || undefined,
+                    title: file.name
+                });
+                uploaded.push(doc);
+            } catch (e) {
+                console.error('Failed to upload document', e);
+            }
+        }
+        if (uploaded.length) {
+            setDocMap((prev) => {
+                const existing = prev[ctx.key] ?? [];
+                return { ...prev, [ctx.key]: [...uploaded, ...existing] };
+            });
+            loadedDocKeys.current.add(ctx.key);
+        }
+        event.target.value = '';
+        setDocUploadContext(null);
     };
 
 
@@ -469,7 +614,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-7xl h-[90vh] flex overflow-hidden border border-gray-200">
 
                 <input type="file" ref={fileInputRef} className="hidden" accept=".xlsx, .xls" />
-                <input type="file" ref={docUploadRef} className="hidden" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,image/*" />
+                <input type="file" ref={docUploadRef} className="hidden" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.txt,image/*" onChange={handleDocUploadChange} />
 
                 {/* Column 1: Country Sidebar */}
                 <div className="w-56 bg-gray-50 border-r border-gray-200 flex flex-col shrink-0">
@@ -612,6 +757,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                 {/* Transport Table */}
                                 {isTransport && (
                                     <div className="flex-1 p-6 overflow-auto animate-fade-in">
+                                        {renderDocsPanel()}
                                         <div className="bg-white border rounded-lg shadow-sm overflow-hidden">
                                             <div className="overflow-x-auto">
                                                 <table className="min-w-full divide-y divide-gray-200">
@@ -685,6 +831,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                 {/* Other Services Table */}
                                 {isOther && (
                                     <div className="flex-1 p-6 overflow-auto animate-fade-in">
+                                        {renderDocsPanel()}
                                         <div className="bg-white border rounded-lg shadow-sm overflow-hidden">
                                             <div className="overflow-x-auto">
                                                 <table className="min-w-full divide-y divide-gray-200">
@@ -768,6 +915,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                         </div>
 
                                         <div className="flex-1 p-6 overflow-auto">
+                                            {renderDocsPanel()}
                                             <div className="bg-white border rounded-lg shadow-sm overflow-hidden">
                                                 <div className="overflow-x-auto">
                                                     <table className="min-w-full divide-y divide-gray-200">

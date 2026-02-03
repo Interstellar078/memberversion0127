@@ -8,13 +8,14 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 
 # LangChain Imports
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from ..schemas import ItineraryItem
-from ..models import AppData, ResourceCity, ResourceHotel, ResourceSpot, ResourceActivity, ResourceTransport
+from ..models import AppData, ResourceCity, ResourceHotel, ResourceSpot, ResourceActivity, ResourceTransport, ResourceDocument
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ class AgentState(TypedDict):
     hotels: List[Dict[str, Any]]
     spots: List[Dict[str, Any]]
     activities: List[Dict[str, Any]]
+    transports: List[Dict[str, Any]]
+    documents: List[Dict[str, Any]]
     itinerary: List[Dict[str, Any]]
     error: Optional[str]
     intent: Optional[str]
@@ -144,6 +147,93 @@ class AIAgentService:
         return 5
 
 
+    def _resolve_city_ids(self, destinations: list[str]) -> list[str]:
+        names = []
+        for d in destinations or []:
+            if not d:
+                continue
+            names.append(d.split('(')[0].strip())
+        if not names:
+            return []
+        ids: list[str] = []
+        for name in names:
+            row = self.db.execute(select(ResourceCity.id).where(ResourceCity.name.ilike(f"%{name}%"))).scalar_one_or_none()
+            if row:
+                ids.append(str(row))
+        # de-dup while preserving order
+        seen = set()
+        unique = []
+        for cid in ids:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            unique.append(cid)
+        return unique
+
+
+    def _fetch_documents(self, country: str | None, city_ids: list[str]) -> List[Dict[str, Any]]:
+        if not country and not city_ids:
+            return []
+        from sqlalchemy import select as _select, or_, desc
+        stmt = _select(ResourceDocument)
+        if country:
+            stmt = stmt.where(ResourceDocument.country == country)
+        if city_ids:
+            stmt = stmt.where(or_(ResourceDocument.city_id == None, ResourceDocument.city_id.in_(city_ids)))
+        else:
+            stmt = stmt.where(ResourceDocument.city_id == None)
+        stmt = stmt.order_by(desc(ResourceDocument.uploaded_at)).limit(50)
+        rows = self.db.execute(stmt).scalars().all()
+        docs: list[dict] = []
+        for d in rows:
+            content = (d.content_text or d.note or '').strip()
+            if content:
+                content = content[:500]
+            docs.append({
+                'id': d.id,
+                'category': d.category,
+                'country': d.country,
+                'city_id': d.city_id,
+                'title': d.title,
+                'note': d.note,
+                'content': content,
+                'uploaded_by': d.uploaded_by,
+                'uploaded_at': d.uploaded_at.isoformat() if d.uploaded_at else None,
+            })
+        return docs
+
+
+    def _extract_days_from_prompt(self, prompt: str | None) -> int | None:
+        if not prompt:
+            return None
+        num_map = {
+            '一': 1,
+            '二': 2,
+            '三': 3,
+            '四': 4,
+            '五': 5,
+            '六': 6,
+            '七': 7,
+            '八': 8,
+            '九': 9,
+            '十': 10,
+        }
+        match = re.search(r"(\d{1,2})\s*(天|日|晚)(行程|行|游|日行)?", prompt)
+        if match:
+            try:
+                days = int(match.group(1))
+                if 1 <= days <= 30:
+                    return days
+            except Exception:
+                return None
+        match = re.search(r"([一二三四五六七八九十])\s*(天|日|晚)(行程|行|游|日行)?", prompt)
+        if match:
+            days = num_map.get(match.group(1))
+            if days and 1 <= days <= 30:
+                return days
+        return None
+
+
     def _backfill_prices(self, itinerary: list[dict], req: Any) -> list[dict]:
         if not itinerary:
             return itinerary
@@ -153,7 +243,6 @@ class AIAgentService:
         def normalize_name(name: str) -> str:
             if not name:
                 return ''
-            # remove brackets and punctuation, lowercase
             name = re.sub(r'[\(（\[【].*?[\)）\]】]', '', name)
             name = re.sub(r'[^0-9a-zA-Z一-鿿]+', '', name).lower()
             return name
@@ -169,31 +258,49 @@ class AIAgentService:
                 return None
             return val
 
-        hotel_id_map = {str(h.id): price_or_none(h.price) for h in self.db.query(ResourceHotel).all()}
-        hotel_map = {normalize_name(h.name): price_or_none(h.price) for h in self.db.query(ResourceHotel).all()}
-        spot_id_map = {str(s.id): price_or_none(s.price) for s in self.db.query(ResourceSpot).all()}
-        spot_map = {normalize_name(s.name): price_or_none(s.price) for s in self.db.query(ResourceSpot).all()}
-        act_id_map = {str(a.id): price_or_none(a.price) for a in self.db.query(ResourceActivity).all()}
-        act_map = {normalize_name(a.name): price_or_none(a.price) for a in self.db.query(ResourceActivity).all()}
-        transport_id_map = {str(t.id): price_or_none(t.price_low) for t in self.db.query(ResourceTransport).all()}
-        transport_map = {}
-        for t in self.db.query(ResourceTransport).all():
-            if t.service_type:
-                transport_map[normalize_name(t.service_type)] = price_or_none(t.price_low)
-            if t.car_model:
-                transport_map[normalize_name(t.car_model)] = price_or_none(t.price_low)
+        hotel_ids = {str(item.get('hotelId')) for item in itinerary if item.get('hotelId')}
+        ticket_ids = {str(tid) for item in itinerary for tid in (item.get('ticketIds') or []) if tid}
+        activity_ids = {str(aid) for item in itinerary for aid in (item.get('activityIds') or []) if aid}
+        transport_ids = {str(tid) for item in itinerary for tid in (item.get('transportIds') or []) if tid}
 
-        def lookup_price(name: str, table: dict) -> float | None:
-            key = normalize_name(name)
-            if not key:
+        def fetch_id_map(model, ids, price_field: str):
+            if not ids:
+                return {}
+            rows = self.db.execute(select(model).where(model.id.in_(list(ids)))).scalars().all()
+            return {str(r.id): price_or_none(getattr(r, price_field)) for r in rows}
+
+        hotel_id_map = fetch_id_map(ResourceHotel, hotel_ids, 'price')
+        spot_id_map = fetch_id_map(ResourceSpot, ticket_ids, 'price')
+        act_id_map = fetch_id_map(ResourceActivity, activity_ids, 'price')
+        transport_id_map = fetch_id_map(ResourceTransport, transport_ids, 'price_low')
+
+        def find_by_name(model, name_field: str, price_field: str, name: str):
+            if not name:
                 return None
-            if key in table:
-                return table[key]
-            # fuzzy contains fallback
-            for k, v in table.items():
-                if k and (key in k or k in key):
-                    return v
-            return None
+            stmt = (
+                select(model)
+                .where(getattr(model, name_field).ilike(f"%{name}%"))
+                .order_by(getattr(model, price_field).asc().nulls_last())
+                .limit(1)
+            )
+            return self.db.execute(stmt).scalars().first()
+
+        def find_transport_by_name(name: str):
+            if not name:
+                return None
+            from sqlalchemy import or_
+            stmt = (
+                select(ResourceTransport)
+                .where(
+                    or_(
+                        ResourceTransport.service_type.ilike(f"%{name}%"),
+                        ResourceTransport.car_model.ilike(f"%{name}%"),
+                    )
+                )
+                .order_by(ResourceTransport.price_low.asc().nulls_last())
+                .limit(1)
+            )
+            return self.db.execute(stmt).scalars().first()
 
         for item in itinerary:
             # hotel
@@ -201,55 +308,82 @@ class AIAgentService:
                 hotel_id = item.get('hotelId')
                 price = hotel_id_map.get(str(hotel_id)) if hotel_id else None
                 if price is None and item.get('hotelName'):
-                    price = lookup_price(item.get('hotelName'), hotel_map)
+                    row = find_by_name(ResourceHotel, 'name', 'price', item.get('hotelName'))
+                    if row:
+                        item['hotelId'] = str(row.id)
+                        price = price_or_none(row.price)
                 if price is not None:
                     item['hotelCost'] = price * rooms
+
             # tickets
             if item.get('ticketCost') in (None, 0):
                 total = 0
-                ids = item.get('ticketIds') or []
+                ids = [str(tid) for tid in (item.get('ticketIds') or []) if tid]
                 for tid in ids:
-                    p = spot_id_map.get(str(tid))
+                    p = spot_id_map.get(tid)
                     if p is not None:
                         total += p
-                if total == 0 and item.get('ticketName'):
-                    names = item.get('ticketName') or []
-                    for n in names:
-                        p = lookup_price(n, spot_map)
-                        if p is not None:
-                            total += p
+                names = item.get('ticketName') or []
+                if names:
+                    for name in names:
+                        row = find_by_name(ResourceSpot, 'name', 'price', name)
+                        if row:
+                            rid = str(row.id)
+                            if rid not in ids:
+                                ids.append(rid)
+                            p = price_or_none(row.price)
+                            if p is not None:
+                                total += p
+                if ids:
+                    item['ticketIds'] = ids
                 if total > 0:
                     item['ticketCost'] = total * people
+
             # activities
             if item.get('activityCost') in (None, 0):
                 total = 0
-                ids = item.get('activityIds') or []
+                ids = [str(aid) for aid in (item.get('activityIds') or []) if aid]
                 for aid in ids:
-                    p = act_id_map.get(str(aid))
+                    p = act_id_map.get(aid)
                     if p is not None:
                         total += p
-                if total == 0 and item.get('activityName'):
-                    names = item.get('activityName') or []
-                    for n in names:
-                        p = lookup_price(n, act_map)
-                        if p is not None:
-                            total += p
+                names = item.get('activityName') or []
+                if names:
+                    for name in names:
+                        row = find_by_name(ResourceActivity, 'name', 'price', name)
+                        if row:
+                            rid = str(row.id)
+                            if rid not in ids:
+                                ids.append(rid)
+                            p = price_or_none(row.price)
+                            if p is not None:
+                                total += p
+                if ids:
+                    item['activityIds'] = ids
                 if total > 0:
                     item['activityCost'] = total * people
+
             # transport
             if item.get('transportCost') in (None, 0):
                 total = 0
-                ids = item.get('transportIds') or []
+                ids = [str(tid) for tid in (item.get('transportIds') or []) if tid]
                 for tid in ids:
-                    p = transport_id_map.get(str(tid))
+                    p = transport_id_map.get(tid)
                     if p is not None:
                         total += p
-                if total == 0 and item.get('transport'):
-                    names = item.get('transport') or []
-                    for n in names:
-                        p = lookup_price(n, transport_map)
-                        if p is not None:
-                            total += p
+                names = item.get('transport') or []
+                if names:
+                    for name in names:
+                        row = find_transport_by_name(name)
+                        if row:
+                            rid = str(row.id)
+                            if rid not in ids:
+                                ids.append(rid)
+                            p = price_or_none(row.price_low)
+                            if p is not None:
+                                total += p
+                if ids:
+                    item['transportIds'] = ids
                 if total > 0:
                     item['transportCost'] = total
         return itinerary
@@ -489,6 +623,53 @@ class AIAgentService:
 
         return [{"id": a.id, "name": a.name, "price": a.price or 0} for a in results][:8]
 
+    def _fetch_transports(self, region: str, passengers: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Search for transports by region (country) and optional passenger count."""
+        from sqlalchemy import select, or_
+        from ..models import ResourceTransport
+
+        user = self.user
+        access_filter = ResourceTransport.is_public == True
+        if user:
+            access_filter = or_(ResourceTransport.is_public == True, ResourceTransport.owner_id == user.username)
+
+        stmt = (
+            select(ResourceTransport)
+            .where(
+                ResourceTransport.region.ilike(f"%{region}%"),
+                access_filter,
+            )
+            .order_by(ResourceTransport.price_low.asc().nulls_last())
+        )
+        if passengers:
+            stmt = stmt.where(ResourceTransport.passengers >= int(passengers))
+        results = self.db.execute(stmt).scalars().all()
+
+        if user is None:
+            return [
+                {
+                    "id": t.id,
+                    "service_type": t.service_type,
+                    "car_model": t.car_model,
+                    "passengers": t.passengers,
+                    "price_low": None,
+                    "price_high": None,
+                }
+                for t in results
+            ][:8]
+
+        return [
+            {
+                "id": t.id,
+                "service_type": t.service_type,
+                "car_model": t.car_model,
+                "passengers": t.passengers,
+                "price_low": t.price_low or 0,
+                "price_high": t.price_high or 0,
+            }
+            for t in results
+        ][:8]
+
     def _search_hotels_tool(self, city_name: str, price_max: Optional[int] = None) -> str:
         hotels = self._fetch_hotels(city_name, price_max)
         return json.dumps(hotels, ensure_ascii=False) if hotels else f"No hotels found in {city_name}."
@@ -497,13 +678,53 @@ class AIAgentService:
         spots = self._fetch_spots(city_name)
         return json.dumps(spots, ensure_ascii=False) if spots else f"No spots found in {city_name}."
 
+    def _search_activities_tool(self, city_name: str) -> str:
+        activities = self._fetch_activities(city_name)
+        return json.dumps(activities, ensure_ascii=False) if activities else f"No activities found in {city_name}."
+
+    def _search_transports_tool(self, region: str, passengers: Optional[int] = None) -> str:
+        transports = self._fetch_transports(region, passengers)
+        return json.dumps(transports, ensure_ascii=False) if transports else f"No transports found in {region}."
+
+    def _search_documents_tool(self, country: str, city_names: Optional[List[str]] = None) -> str:
+        city_ids = self._resolve_city_ids(city_names or [])
+        docs = self._fetch_documents(country, city_ids)
+        return json.dumps(docs, ensure_ascii=False) if docs else f"No documents found for {country}."
+
+    def _run_tool_agent(self, system_prompt: str, user_prompt: Optional[str], tools: list, max_iters: int = 4) -> str:
+        if not self.llm or not hasattr(self.llm, 'bind_tools'):
+            return ''
+        bound = self.llm.bind_tools(tools)
+        messages = [SystemMessage(content=system_prompt)]
+        messages.append(HumanMessage(content=user_prompt or '请生成行程'))
+        tool_map = {t.name: t for t in tools}
+        for _ in range(max_iters):
+            ai_msg = bound.invoke(messages)
+            messages.append(ai_msg)
+            tool_calls = getattr(ai_msg, 'tool_calls', None) or []
+            if not tool_calls:
+                return getattr(ai_msg, 'content', '') or ''
+            for call in tool_calls:
+                name = call.get('name')
+                args = call.get('args') or {}
+                tool = tool_map.get(name)
+                try:
+                    if tool is None:
+                        result = json.dumps({'error': f'Unknown tool: {name}'}, ensure_ascii=False)
+                    else:
+                        result = tool.invoke(args) if hasattr(tool, 'invoke') else tool(**args)
+                except Exception as exc:
+                    result = json.dumps({'error': str(exc)}, ensure_ascii=False)
+                messages.append(ToolMessage(content=str(result), tool_call_id=call.get('id')))
+        return getattr(messages[-1], 'content', '') or ''
+
     def generate_itinerary_with_react(self, req: Any) -> Dict[str, Any]:
         if not self.llm:
             return {"error": "LLM not configured (LangChain)"}
 
         city = req.currentDestinations[0] if req.currentDestinations else "Unknown"
-        days = req.currentDays or self._recommend_days(city)
-        available_countries = ", ".join(req.availableCountries or [])
+        user_days = self._extract_days_from_prompt(getattr(req, "userPrompt", None))
+        days = user_days or req.currentDays or self._recommend_days(city)
         conversation_id = getattr(req, "conversationId", None)
         memory_summary = self._load_memory(conversation_id)
         self._memory_summary = memory_summary
@@ -540,66 +761,113 @@ class AIAgentService:
             logger.info("AI intent: %s", intent)
             return {**state, "intent": intent}
 
-        def fetch_resources(state: AgentState) -> AgentState:
+
+        def retrieve_context(state: AgentState) -> AgentState:
             if state.get("error") or state.get("needs_more_info"):
                 return state
-            hotels = self._fetch_hotels(city)
-            spots = self._fetch_spots(city)
-            activities = self._fetch_activities(city)
-            logger.info("AI resources: hotels=%s spots=%s activities=%s", len(hotels), len(spots), len(activities))
-            return {**state, "hotels": hotels, "spots": spots, "activities": activities}
+            destinations = req.currentDestinations or []
+            primary_city = destinations[0] if destinations else ""
+            country = self._infer_country(primary_city) or primary_city
+            city_ids = self._resolve_city_ids(destinations)
+            hotels = self._fetch_hotels(primary_city) if primary_city else []
+            spots = self._fetch_spots(primary_city) if primary_city else []
+            activities = self._fetch_activities(primary_city) if primary_city else []
+            transports = self._fetch_transports(country, getattr(req, "peopleCount", None)) if country else []
+            documents = self._fetch_documents(country, city_ids)
+            logger.info(
+                "AI retrieved: hotels=%s spots=%s activities=%s transports=%s documents=%s",
+                len(hotels),
+                len(spots),
+                len(activities),
+                len(transports),
+                len(documents),
+            )
+            return {
+                **state,
+                "hotels": hotels,
+                "spots": spots,
+                "activities": activities,
+                "transports": transports,
+                "documents": documents,
+            }
+
+        @tool
+        def search_hotels(city: str, price_max: int | None = None) -> str:
+            """Search hotels by city, returning id/name/price."""
+            return self._search_hotels_tool(city, price_max)
+
+        @tool
+        def search_spots(city: str) -> str:
+            """Search scenic spots by city, returning id/name/price."""
+            return self._search_spots_tool(city)
+
+        @tool
+        def search_activities(city: str) -> str:
+            """Search activities by city, returning id/name/price."""
+            return self._search_activities_tool(city)
+
+        @tool
+        def search_transports(region: str, passengers: int | None = None) -> str:
+            """Search transports by region (country) and passengers."""
+            return self._search_transports_tool(region, passengers)
+
+        @tool
+        def search_documents(country: str, city_names: list[str] | None = None) -> str:
+            """Search uploaded partner documents by country/cities."""
+            return self._search_documents_tool(country, city_names)
 
         def generate_plan(state: AgentState) -> AgentState:
             if state.get("error") or state.get("needs_more_info"):
                 return state
-            hotels_json = json.dumps(state["hotels"], ensure_ascii=False)
-            spots_json = json.dumps(state["spots"], ensure_ascii=False)
-            activities_json = json.dumps(state.get("activities", []), ensure_ascii=False)
             intent = state.get("intent") or "create"
             current_rows_json = ""
             if intent == "modify" and req.currentRows:
                 current_rows_json = json.dumps(req.currentRows, ensure_ascii=False)
+
+            form_context = {
+                "destinations": req.currentDestinations or [],
+                "currentDays": req.currentDays or None,
+                "startDate": getattr(req, "startDate", None),
+                "peopleCount": getattr(req, "peopleCount", None),
+                "roomCount": getattr(req, "roomCount", None),
+                "memorySummary": memory_summary,
+            }
+
+            retrieved_context = {
+                "hotels": state.get("hotels", []),
+                "spots": state.get("spots", []),
+                "activities": state.get("activities", []),
+                "transports": state.get("transports", []),
+                "documents": state.get("documents", []),
+            }
+
             system_prompt = f"""你是专业行程规划师，输出**仅JSON**且为简体中文。
 目标：生成 {city} 的 {days} 天行程（意图：{intent}）。
-若提供可用国家列表，请优先在其范围内规划：{available_countries or "未提供"}。
-优化目标：行程节奏合理、交通便捷舒适、住宿匹配人数、关注文化/宗教/饮食/体力/季节。
-**以用户描述为准**：若用户在对话中明确天数/目的地，优先使用用户给出的参数，即使与表单不一致。
-默认出发/返回地：中国（若用户未提供，且境外行程视为往返中国）。
-若天数缺失，先按推荐天数生成草案，并等待确认。
-价格要求：若用户未提供预算/价格，成本字段（hotelCost/ticketCost/activityCost/transportCost/otherCost）请置为null或0，不要虚构价格。
-{"已有行程（JSON，需在此基础上优化）:" + current_rows_json if current_rows_json else ""}
-可用酒店资源：{hotels_json}
-可用景点资源：{spots_json}
-可用活动资源：{activities_json}
-输出结构必须是：{{"itinerary": [ItineraryItem...]}}。
-请尽量为酒店/门票/活动写入对应ID字段（hotelId/ticketIds/activityIds）。
-不要提供A/B或多套方案，只给**单一最佳方案**。
-Context: "{req.userPrompt}"
+输入信息：{form_context}
+用户原话：{req.userPrompt or ''}
+规则：
+1) **以用户输入为准**：若用户在对话中明确天数/目的地，优先使用用户给出的参数，即使与表单不一致。
+2) 国内以城市为目的地；国外以国家为目的地。境外默认往返中国（用户未提供出发/返程时）。
+3) 先给出可执行草案，后续再按用户反馈调整；避免连环追问。
+4) 不询问隐私项（孩子/年龄/性别/宗教等），除非用户主动提及。
+5) 生成**单一最佳方案**，不要A/B或多套方案。
+6) 请先使用工具检索资源（酒店/景点/活动/交通/文档），**文档优先级最高**；若文档与资源库冲突，以文档为准。
+已检索资源（优先使用）：{json.dumps(retrieved_context, ensure_ascii=False)}
+7) 输出结构必须是：{{"itinerary": [ItineraryItem...]}}。
+8) 请为酒店/门票/活动/交通写入对应ID字段（hotelId/ticketIds/activityIds/transportIds），名称必须与工具返回一致。
+9) 若用户未提供预算，成本字段可为null或0，不要虚构价格（后端会回填）。
+{("已有行程JSON（需在此基础上优化）:" + current_rows_json) if current_rows_json else ""}
 """
-            try:
-                planner = self.llm.with_structured_output(ItineraryEnvelope)
-                response = planner.invoke(
-                    [
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(content="Please generate the itinerary JSON.")
-                    ]
-                )
-                if isinstance(response, ItineraryEnvelope):
-                    return {**state, "itinerary": [item.model_dump() for item in response.itinerary], "error": None}
-                output_str = getattr(response, "content", "")
-            except Exception as exc:
-                try:
-                    response = self.llm.invoke(
-                        [
-                            SystemMessage(content=system_prompt),
-                            HumanMessage(content="Please generate the itinerary JSON.")
-                        ]
-                    )
-                    output_str = getattr(response, "content", "")
-                except Exception as fallback_exc:
-                    return {**state, "error": str(fallback_exc), "itinerary": []}
 
-            clean_json = output_str.strip()
+            tools = [search_hotels, search_spots, search_activities, search_transports, search_documents]
+            output_str = self._run_tool_agent(system_prompt, req.userPrompt, tools, max_iters=4)
+            if not output_str:
+                # Fallback: minimal static context if tool-calling unsupported
+                fallback_prompt = system_prompt + f"\n已检索资源（优先使用）：{json.dumps(retrieved_context, ensure_ascii=False)}\n"
+                response = self.llm.invoke([SystemMessage(content=fallback_prompt), HumanMessage(content=req.userPrompt or '请生成行程')])
+                output_str = getattr(response, 'content', '')
+
+            clean_json = (output_str or '').strip()
             if "```json" in clean_json:
                 clean_json = clean_json.split("```json")[1].split("```")[0].strip()
             elif "```" in clean_json:
@@ -609,8 +877,8 @@ Context: "{req.userPrompt}"
                 data = json.loads(clean_json)
                 itinerary = data.get("itinerary", []) if isinstance(data, dict) else data
                 return {**state, "itinerary": itinerary, "error": None}
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse AI output JSON: {output_str}")
+            except Exception:
+                logger.error("Failed to parse AI output JSON: %s", output_str)
                 return {**state, "error": "Failed to parse JSON from AI", "itinerary": []}
 
         def validate_plan(state: AgentState) -> AgentState:
@@ -629,15 +897,15 @@ Context: "{req.userPrompt}"
         graph = StateGraph(AgentState)
         graph.add_node("assess_requirements", assess_requirements)
         graph.add_node("detect_intent", detect_intent)
-        graph.add_node("fetch_resources", fetch_resources)
+        graph.add_node("retrieve_context", retrieve_context)
         graph.add_node("generate_plan", generate_plan)
         graph.add_node("validate_plan", validate_plan)
         graph.set_entry_point("assess_requirements")
         def route_after_assess(state: AgentState) -> str:
             return END if state.get("needs_more_info") else "detect_intent"
         graph.add_conditional_edges("assess_requirements", route_after_assess)
-        graph.add_edge("detect_intent", "fetch_resources")
-        graph.add_edge("fetch_resources", "generate_plan")
+        graph.add_edge("detect_intent", "retrieve_context")
+        graph.add_edge("retrieve_context", "generate_plan")
         graph.add_edge("generate_plan", "validate_plan")
         graph.add_edge("validate_plan", END)
         app = graph.compile()
@@ -647,6 +915,8 @@ Context: "{req.userPrompt}"
             "hotels": [],
             "spots": [],
             "activities": [],
+            "transports": [],
+            "documents": [],
             "itinerary": [],
             "error": None,
             "intent": None,

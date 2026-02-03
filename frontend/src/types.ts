@@ -202,6 +202,21 @@ export interface CountryFile {
   isPublic?: boolean;
 }
 
+export interface ResourceDocument {
+  id: string;
+  category: string;
+  country: string;
+  cityId?: string | null;
+  title: string;
+  fileName: string;
+  mimeType?: string;
+  size: number;
+  note?: string;
+  uploadedBy: string;
+  uploadedAt?: string;
+  downloadUrl?: string;
+}
+
 export interface ResourceMetadata {
   lastUpdated: number;
   updatedBy: string;
