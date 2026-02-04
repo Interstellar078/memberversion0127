@@ -123,6 +123,21 @@ class ResourceTransport(Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
 
 
+class ResourceRestaurant(Base):
+    __tablename__ = "resource_restaurants"
+    
+    id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    city_id: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    cuisine_type: Mapped[str | None] = mapped_column(String(100), nullable=True)  # 中餐/日料/西餐/etc
+    avg_price: Mapped[float] = mapped_column(Integer, default=0)  # 人均消费
+    dietary_tags: Mapped[str | None] = mapped_column(String(200), nullable=True)  # 素食/清真/无麸质/etc
+    meal_type: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 早餐/午餐/晚餐/全天
+    owner_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
 class ResourceDocument(Base):
     __tablename__ = "resource_documents"
     

@@ -135,6 +135,32 @@ class TransportOut(TransportBase):
     owner_id: str
 
 
+# --- Restaurant ---
+class RestaurantBase(CamelModel):
+    city_id: str
+    name: str
+    cuisine_type: Optional[str] = None
+    avg_price: Optional[float] = 0
+    dietary_tags: Optional[str] = None
+    meal_type: Optional[str] = None
+    is_public: Optional[bool] = False
+
+class RestaurantCreate(RestaurantBase):
+    id: Optional[str] = None
+
+class RestaurantUpdate(CamelModel):
+    name: Optional[str] = None
+    cuisine_type: Optional[str] = None
+    avg_price: Optional[float] = None
+    dietary_tags: Optional[str] = None
+    meal_type: Optional[str] = None
+    is_public: Optional[bool] = None
+
+class RestaurantOut(RestaurantBase):
+    id: str
+    owner_id: str
+
+
 
 class DocumentOut(CamelModel):
     id: str

@@ -6,6 +6,16 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from ..config import get_settings
+from ..prompts import (
+    ASSESSMENT_SYSTEM,
+    CITY_COUNTRY_INFERENCE,
+    DAYS_RECOMMENDATION,
+    MEMORY_SUMMARY,
+    ITINERARY_GENERATION_SYSTEM,
+    RISK_ASSESSMENT,
+    SEASONAL_NOTE,
+    format_prompt
+)
 
 # LangChain Imports
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -15,7 +25,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from ..schemas import ItineraryItem
-from ..models import AppData, ResourceCity, ResourceHotel, ResourceSpot, ResourceActivity, ResourceTransport, ResourceDocument
+from ..models import AppData, ResourceCity, ResourceHotel, ResourceSpot, ResourceActivity, ResourceTransport, ResourceDocument, ResourceRestaurant
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +35,14 @@ class AgentState(TypedDict):
     spots: List[Dict[str, Any]]
     activities: List[Dict[str, Any]]
     transports: List[Dict[str, Any]]
+    restaurants: List[Dict[str, Any]]
     documents: List[Dict[str, Any]]
     itinerary: List[Dict[str, Any]]
     error: Optional[str]
     intent: Optional[str]
     needs_more_info: Optional[bool]
     follow_up: Optional[str]
+    risk_warning: Optional[str]
 class AssessmentResult(BaseModel):
     need_more_info: bool
     question: str | None = None
@@ -63,8 +75,17 @@ class AIAgentService:
         if not self.llm:
             return "AI 未配置，请稍后再试。"
         user_prompt = (req.userPrompt or "").strip()
+        
+        # Intelligently infer countries to avoid asking obvious questions
+        inferred_countries = []
+        for dest in (req.currentDestinations or []):
+            country = self._infer_country(dest)
+            if country:
+                inferred_countries.append(f"{dest}({country})")
+        
         context = {
             "currentDestinations": req.currentDestinations or [],
+            "inferredCountries": inferred_countries,
             "currentDays": req.currentDays or 0,
             "currentRowsCount": len(req.currentRows or []),
             "memorySummary": self._memory_summary,
@@ -74,17 +95,11 @@ class AIAgentService:
             "startDate": getattr(req, "startDate", None),
             "userPrompt": user_prompt,
         }
-        system_prompt = f"""你是旅行行程定制助手。请在旅行场景内判断是否可以生成行程。
-只输出JSON：{{"need_more_info": true/false, "question": "..."}}。
-规则（务必严格）：
-- **最多只问1个问题**，且必须是一句话。
-- **只有在“目的地缺失”时才提问**，问题只问目的地（城市/国家）。
-- 目的地已存在时，**不要再问天数/日期/人数/房间/预算/偏好**，直接生成草案。
-- 表单已有信息（目的地/天数/日期/人数/房间）不得重复询问。
-- **不要主动询问隐私项**（孩子/年龄/性别/宗教等），除非用户明确提及。
-- 若输入为非旅行话题，need_more_info=true，question一句话引导回旅行需求。
-- 若信息足够，need_more_info=false，question留空。
-当前上下文：{context}"""
+        system_prompt = format_prompt(
+            ASSESSMENT_SYSTEM,
+            inferred_countries=inferred_countries or "无",
+            context=context
+        )
         try:
             structured = self.llm.with_structured_output(AssessmentResult)
             result = structured.invoke([SystemMessage(content=system_prompt), HumanMessage(content="请输出JSON")])
@@ -112,37 +127,101 @@ class AIAgentService:
 
 
     def _infer_country(self, destination: str) -> str | None:
+        """AI智能推断城市所属国家（支持任意语言和格式）"""
         if not destination:
             return None
-        dest = destination.split('(')[0].strip()
-        if '中国' in dest or dest.lower() == 'china':
-            return '中国'
+        
+        original_dest = destination.split('(')[0].strip()
+        dest_lower = original_dest.lower()
+        
+        # 1. 检查缓存（避免重复LLM调用）
+        if hasattr(self, '_country_cache') and dest_lower in self._country_cache:
+            return self._country_cache[dest_lower]
+        
+        # 2. 优先查询数据库（用户自定义数据优先级最高）
         try:
             row = self.db.execute(
-                select(ResourceCity.country).where(ResourceCity.name == dest)
+                select(ResourceCity.country).where(ResourceCity.name.ilike(f"%{original_dest}%"))
             ).scalar_one_or_none()
             if row:
-                return str(row)
+                country = str(row)
+                if not hasattr(self, '_country_cache'):
+                    self._country_cache = {}
+                self._country_cache[dest_lower] = country
+                return country
         except Exception:
             pass
-        return dest if dest else None
+        
+        # 3. 国家关键词直接识别
+        if '中国' in dest_lower or dest_lower == 'china':
+            return '中国'
+        
+        # 4. 使用LLM智能推断（可处理任意城市/语言）
+        if self.llm:
+            try:
+                prompt = format_prompt(CITY_COUNTRY_INFERENCE, city_name=original_dest)
+                
+                response = self.llm.invoke([HumanMessage(content=prompt)])
+                country = getattr(response, 'content', '').strip()
+                
+                # 清理LLM输出
+                if country and country != '未知' and len(country) < 20:
+                    # 移除可能的标点符号
+                    country = country.replace('。', '').replace('，', '').strip()
+                    
+                    # 缓存结果
+                    if not hasattr(self, '_country_cache'):
+                        self._country_cache = {}
+                    self._country_cache[dest_lower] = country
+                    return country
+            except Exception as e:
+                logger.warning(f"LLM city inference failed for {original_dest}: {e}")
+        
+        return None
 
     def _recommend_days(self, destination: str) -> int:
+        """AI智能推荐旅行天数（基于目的地特点）"""
         country = self._infer_country(destination) or destination
         if not country:
             return 5
-        east_asia = {'日本','韩国','朝鲜','中国台湾','中国香港','中国澳门','新加坡'}
-        se_asia = {'泰国','越南','马来西亚','印度尼西亚','印尼','菲律宾','柬埔寨','老挝','缅甸','文莱'}
-        europe = {'英国','法国','德国','意大利','西班牙','葡萄牙','瑞士','奥地利','荷兰','比利时','挪威','瑞典','芬兰','丹麦','捷克','希腊','波兰','匈牙利','爱尔兰'}
-        americas = {'美国','加拿大','墨西哥','巴西','阿根廷','智利','秘鲁'}
-        oceania = {'澳大利亚','新西兰'}
+        
+        # 检查缓存
+        cache_key = f"days_{country.lower()}"
+        if hasattr(self, '_days_cache') and cache_key in self._days_cache:
+            return self._days_cache[cache_key]
+        
+        # 使用LLM智能推荐
+        if self.llm:
+            try:
+                prompt = format_prompt(DAYS_RECOMMENDATION, country=country)
+                
+                response = self.llm.invoke([HumanMessage(content=prompt)])
+                content = getattr(response, 'content', '').strip()
+                
+                # 提取数字
+                import re
+                match = re.search(r'\d+', content)
+                if match:
+                    days = int(match.group())
+                    # 限制范围 3-15天
+                    days = max(3, min(15, days))
+                    
+                    # 缓存结果
+                    if not hasattr(self, '_days_cache'):
+                        self._days_cache = {}
+                    self._days_cache[cache_key] = days
+                    return days
+            except Exception as e:
+                logger.warning(f"LLM days recommendation failed for {country}: {e}")
+        
+        # 降级方案：简单规则
         if country == '中国':
             return 3
-        if country in east_asia:
+        if any(k in country for k in ['日本', '韩国', '新加坡', '香港', '澳门', '台湾']):
             return 4
-        if country in se_asia:
+        if any(k in country for k in ['泰国', '越南', '马来西亚', '印尼', '菲律宾', '柬埔寨']):
             return 6
-        if country in europe or country in americas or country in oceania:
+        if any(k in country for k in ['美国', '加拿大', '英国', '法国', '德国', '意大利', '澳大利亚', '新西兰']):
             return 9
         return 5
 
@@ -425,11 +504,11 @@ class AIAgentService:
             return existing
         history = req.chatHistory or []
         tail = history[-8:]
-        prompt = f"""你是旅行顾问，请将对话信息压缩成不超过80字的“已知旅行需求摘要”。
-包含目的地、天数、出行人群/人数、偏好与限制（若有）。
-已知摘要：{existing or '无'}
-最近对话：{tail}
-仅输出JSON：{{"summary":"..."}}。"""
+        prompt = format_prompt(
+            MEMORY_SUMMARY,
+            chat_history=str(tail),
+            current_summary=existing or '无'
+        )
         try:
             structured = self.llm.with_structured_output(MemorySummary)
             res = structured.invoke([SystemMessage(content=prompt), HumanMessage(content="请输出JSON")])
@@ -670,6 +749,28 @@ class AIAgentService:
             for t in results
         ][:8]
 
+    def _fetch_restaurants(self, city_name: str, cuisine_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        if not city_name:
+            return []
+        from ..models import ResourceRestaurant, ResourceCity
+        stmt = select(ResourceRestaurant).join(ResourceCity).where(ResourceCity.name == city_name)
+        stmt = stmt.where(ResourceRestaurant.is_public == True)
+        if cuisine_type:
+            stmt = stmt.where(ResourceRestaurant.cuisine_type == cuisine_type)
+        stmt = stmt.limit(15)
+        rows = self.db.execute(stmt).scalars().all()
+        result: list[dict] = []
+        for r in rows:
+            result.append({
+                'id': r.id,
+                'name': r.name,
+                'cuisine_type': r.cuisine_type,
+                'avg_price': r.avg_price if self.user else None,
+                'dietary_tags': r.dietary_tags,
+                'meal_type': r.meal_type
+            })
+        return result
+
     def _search_hotels_tool(self, city_name: str, price_max: Optional[int] = None) -> str:
         hotels = self._fetch_hotels(city_name, price_max)
         return json.dumps(hotels, ensure_ascii=False) if hotels else f"No hotels found in {city_name}."
@@ -685,6 +786,10 @@ class AIAgentService:
     def _search_transports_tool(self, region: str, passengers: Optional[int] = None) -> str:
         transports = self._fetch_transports(region, passengers)
         return json.dumps(transports, ensure_ascii=False) if transports else f"No transports found in {region}."
+
+    def _search_restaurants_tool(self, city_name: str, cuisine_type: Optional[str] = None) -> str:
+        restaurants = self._fetch_restaurants(city_name, cuisine_type)
+        return json.dumps(restaurants, ensure_ascii=False) if restaurants else f"No restaurants found in {city_name}."
 
     def _search_documents_tool(self, country: str, city_names: Optional[List[str]] = None) -> str:
         city_ids = self._resolve_city_ids(city_names or [])
@@ -772,13 +877,15 @@ class AIAgentService:
             hotels = self._fetch_hotels(primary_city) if primary_city else []
             spots = self._fetch_spots(primary_city) if primary_city else []
             activities = self._fetch_activities(primary_city) if primary_city else []
+            restaurants = self._fetch_restaurants(primary_city) if primary_city else []
             transports = self._fetch_transports(country, getattr(req, "peopleCount", None)) if country else []
             documents = self._fetch_documents(country, city_ids)
             logger.info(
-                "AI retrieved: hotels=%s spots=%s activities=%s transports=%s documents=%s",
+                "AI retrieved: hotels=%s spots=%s activities=%s restaurants=%s transports=%s documents=%s",
                 len(hotels),
                 len(spots),
                 len(activities),
+                len(restaurants),
                 len(transports),
                 len(documents),
             )
@@ -787,6 +894,7 @@ class AIAgentService:
                 "hotels": hotels,
                 "spots": spots,
                 "activities": activities,
+                "restaurants": restaurants,
                 "transports": transports,
                 "documents": documents,
             }
@@ -810,6 +918,11 @@ class AIAgentService:
         def search_transports(region: str, passengers: int | None = None) -> str:
             """Search transports by region (country) and passengers."""
             return self._search_transports_tool(region, passengers)
+
+        @tool
+        def search_restaurants(city: str, cuisine: str | None = None) -> str:
+            """Search restaurants by city and optional cuisine type."""
+            return self._search_restaurants_tool(city, cuisine)
 
         @tool
         def search_documents(country: str, city_names: list[str] | None = None) -> str:
@@ -837,29 +950,23 @@ class AIAgentService:
                 "hotels": state.get("hotels", []),
                 "spots": state.get("spots", []),
                 "activities": state.get("activities", []),
+                "restaurants": state.get("restaurants", []),
                 "transports": state.get("transports", []),
                 "documents": state.get("documents", []),
             }
 
-            system_prompt = f"""你是专业行程规划师，输出**仅JSON**且为简体中文。
-目标：生成 {city} 的 {days} 天行程（意图：{intent}）。
-输入信息：{form_context}
-用户原话：{req.userPrompt or ''}
-规则：
-1) **以用户输入为准**：若用户在对话中明确天数/目的地，优先使用用户给出的参数，即使与表单不一致。
-2) 国内以城市为目的地；国外以国家为目的地。境外默认往返中国（用户未提供出发/返程时）。
-3) 先给出可执行草案，后续再按用户反馈调整；避免连环追问。
-4) 不询问隐私项（孩子/年龄/性别/宗教等），除非用户主动提及。
-5) 生成**单一最佳方案**，不要A/B或多套方案。
-6) 请先使用工具检索资源（酒店/景点/活动/交通/文档），**文档优先级最高**；若文档与资源库冲突，以文档为准。
-已检索资源（优先使用）：{json.dumps(retrieved_context, ensure_ascii=False)}
-7) 输出结构必须是：{{"itinerary": [ItineraryItem...]}}。
-8) 请为酒店/门票/活动/交通写入对应ID字段（hotelId/ticketIds/activityIds/transportIds），名称必须与工具返回一致。
-9) 若用户未提供预算，成本字段可为null或0，不要虚构价格（后端会回填）。
-{("已有行程JSON（需在此基础上优化）:" + current_rows_json) if current_rows_json else ""}
-"""
+            system_prompt = format_prompt(
+                ITINERARY_GENERATION_SYSTEM,
+                city=city,
+                days=days,
+                intent=intent,
+                form_context=form_context,
+                user_prompt=req.userPrompt or '',
+                retrieved_context=json.dumps(retrieved_context, ensure_ascii=False),
+                current_rows_note=(f"已有行程JSON（需在此基础上优化）:{current_rows_json}" if current_rows_json else "")
+            )
 
-            tools = [search_hotels, search_spots, search_activities, search_transports, search_documents]
+            tools = [search_hotels, search_spots, search_activities, search_restaurants, search_transports, search_documents]
             output_str = self._run_tool_agent(system_prompt, req.userPrompt, tools, max_iters=4)
             if not output_str:
                 # Fallback: minimal static context if tool-calling unsupported
@@ -915,6 +1022,7 @@ class AIAgentService:
             "hotels": [],
             "spots": [],
             "activities": [],
+            "restaurants": [],
             "transports": [],
             "documents": [],
             "itinerary": [],
@@ -922,6 +1030,7 @@ class AIAgentService:
             "intent": None,
             "needs_more_info": False,
             "follow_up": None,
+            "risk_warning": None,
         }
         result = app.invoke(initial_state)
         final_error = result.get("error")

@@ -12,7 +12,7 @@ from ..deps import get_db, get_current_user, get_current_user_optional
 from ..config import get_settings
 from ..models import (
     User, ResourceCountry, ResourceCity, ResourceSpot, ResourceHotel, 
-    ResourceActivity, ResourceTransport, ResourceDocument
+    ResourceActivity, ResourceTransport, ResourceDocument, ResourceRestaurant
 )
 from ..schemas_resources import (
     CountryOut, CountryCreate, CountryUpdate,
@@ -20,7 +20,9 @@ from ..schemas_resources import (
     SpotOut, SpotCreate, SpotUpdate,
     HotelOut, HotelCreate, HotelUpdate,
     ActivityOut, ActivityCreate, ActivityUpdate,
-    TransportOut, TransportCreate, TransportUpdate, DocumentOut
+    TransportOut, TransportCreate, TransportUpdate,
+    RestaurantOut, RestaurantCreate, RestaurantUpdate,
+    DocumentOut
 )
 
 router = APIRouter(prefix="/api/resources", tags=["resources"])
@@ -28,6 +30,43 @@ router = APIRouter(prefix="/api/resources", tags=["resources"])
 settings = get_settings()
 UPLOAD_DIR = Path(settings.upload_dir)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+ALLOWED_EXTENSIONS = {
+    ".pdf", ".txt", ".md", ".csv",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    ".jpg", ".jpeg", ".png", ".webp",
+}
+ALLOWED_MIME_TYPES = {
+    "application/pdf",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+MIME_BY_EXT = {
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".csv": "text/csv",
+    ".doc": "application/msword",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".ppt": "application/vnd.ms-powerpoint",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
 
 # --- Helper for Pagination ---
 def paginate_query(query, page: int, size: int):
@@ -481,6 +520,79 @@ def delete_transport(id: str, db: Session = Depends(get_db), current_user: User 
     db.commit()
     return {"success": True}
 
+
+# --- Restaurants ---
+@router.get("/restaurants", response_model=List[RestaurantOut])
+def list_restaurants(
+    city_id: Optional[str] = None,
+    city_name: Optional[List[str]] = Query(None),
+    cuisine_type: Optional[str] = None,
+    search: Optional[str] = None,
+    scope: str = "all",
+    page: int = 1,
+    size: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional)
+):
+    query = select(ResourceRestaurant)
+    query = apply_scope_filter(query, ResourceRestaurant, current_user, scope)
+    if city_id: query = query.where(ResourceRestaurant.city_id == city_id)
+    if city_name: query = query.join(ResourceCity).where(ResourceCity.name.in_(city_name))
+    if cuisine_type: query = query.where(ResourceRestaurant.cuisine_type == cuisine_type)
+    if search: query = query.where(ResourceRestaurant.name.ilike(f"%{search}%"))
+    items = db.scalars(paginate_query(query, page, size)).all()
+    if current_user is None:
+        mask_prices_for_guest(items)
+    return items
+
+@router.post("/restaurants", response_model=RestaurantOut)
+def create_restaurant(payload: RestaurantCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    final_is_public = payload.is_public and current_user.role == 'admin'
+    owner = 'system' if final_is_public else current_user.username
+    obj = ResourceRestaurant(
+        id=payload.id or str(uuid.uuid4()),
+        city_id=payload.city_id,
+        name=payload.name,
+        cuisine_type=payload.cuisine_type,
+        avg_price=payload.avg_price,
+        dietary_tags=payload.dietary_tags,
+        meal_type=payload.meal_type,
+        owner_id=owner,
+        is_public=final_is_public
+    )
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+@router.put("/restaurants/{id}", response_model=RestaurantOut)
+def update_restaurant(id: str, payload: RestaurantUpdate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    obj = db.get(ResourceRestaurant, id)
+    if not obj: raise HTTPException(404, "Not found")
+    if obj.owner_id != current_user.username and not (obj.is_public and current_user.role == 'admin'): raise HTTPException(403)
+    
+    if payload.name is not None: obj.name = payload.name
+    if payload.cuisine_type is not None: obj.cuisine_type = payload.cuisine_type
+    if payload.avg_price is not None: obj.avg_price = payload.avg_price
+    if payload.dietary_tags is not None: obj.dietary_tags = payload.dietary_tags
+    if payload.meal_type is not None: obj.meal_type = payload.meal_type
+    if payload.is_public is not None:
+        if current_user.role != 'admin': raise HTTPException(403)
+        obj.is_public = payload.is_public
+        obj.owner_id = 'system' if payload.is_public else current_user.username
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+@router.delete("/restaurants/{id}")
+def delete_restaurant(id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    obj = db.get(ResourceRestaurant, id)
+    if not obj: return {"success": True}
+    if obj.owner_id != current_user.username and not (obj.is_public and current_user.role == 'admin'): raise HTTPException(403)
+    db.delete(obj)
+    db.commit()
+    return {"success": True}
+
 # --- Documents ---
 @router.get("/documents", response_model=List[DocumentOut])
 def list_documents(
@@ -539,13 +651,37 @@ def upload_document(
         raise HTTPException(status_code=400, detail="Country required")
 
     safe_name = Path(file.filename or "document").name
-    ext = Path(safe_name).suffix
+    ext = Path(safe_name).suffix.lower()
+    if not ext or ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported file type")
+    if file.content_type:
+        content_type = file.content_type.lower()
+        if content_type not in ALLOWED_MIME_TYPES and not (content_type.startswith("text/") and ext in {".txt", ".md", ".csv"}):
+            raise HTTPException(status_code=400, detail="Unsupported content type")
     doc_id = str(uuid.uuid4())
     stored_name = f"{doc_id}{ext}"
     dest = UPLOAD_DIR / stored_name
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
-    file.file.close()
+    size = 0
+    try:
+        with dest.open("wb") as f:
+            while True:
+                chunk = file.file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="File too large")
+                f.write(chunk)
+    except HTTPException:
+        if dest.exists():
+            dest.unlink()
+        raise
+    except Exception:
+        if dest.exists():
+            dest.unlink()
+        raise
+    finally:
+        file.file.close()
 
     content_text: Optional[str] = None
     if file.content_type and file.content_type.startswith("text/"):
@@ -559,7 +695,7 @@ def upload_document(
         except Exception:
             content_text = None
 
-    size = dest.stat().st_size if dest.exists() else 0
+    size = dest.stat().st_size if dest.exists() else size
     doc = ResourceDocument(
         id=doc_id,
         category=category,
@@ -568,7 +704,7 @@ def upload_document(
         title=title or safe_name,
         file_name=safe_name,
         file_path=str(dest),
-        mime_type=file.content_type,
+        mime_type=(file.content_type or MIME_BY_EXT.get(ext)),
         size=size,
         note=note,
         content_text=content_text,

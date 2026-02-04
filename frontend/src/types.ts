@@ -50,28 +50,29 @@ export interface DayRow {
   dayIndex: number; // 1-based
   date: string; // YYYY-MM-DD
   route: string; // Format: A-B-C
-  
+
   // Transport
   transport: string[]; // Transport Types (e.g. 包车)
   transportDetails: TransportItem[]; // Replaces carModel
-  
+
   // Hotel
   hotelDetails: HotelItem[]; // Replaces hotelName, hotelRoomType, rooms
 
   // Items
   ticketDetails: GeneralItem[]; // Replaces ticketName
   activityDetails: GeneralItem[]; // Replaces activityName
+  restaurantDetails: GeneralItem[]; // Restaurant recommendations
   otherDetails: GeneralItem[]; // Replaces otherServiceName
 
-  description: string; 
-  
+  description: string;
+
   // Costs (Calculated Sums)
   transportCost: number;
-  hotelCost: number; 
-  ticketCost: number; 
-  activityCost: number; 
-  otherCost: number; 
-  
+  hotelCost: number;
+  ticketCost: number;
+  activityCost: number;
+  otherCost: number;
+
   // Custom dynamic costs
   customCosts: Record<string, number>;
 
@@ -83,7 +84,7 @@ export interface DayRow {
     activity?: boolean;
     other?: boolean;
   };
-  
+
   // Source tracking for masking logic (Aggregation implies if ANY is public, treat carefully, usually simple logic: if mixed, maybe show masked?)
   // We will calculate these dynamically based on the lists.
 }
@@ -100,41 +101,41 @@ export interface SavedTrip {
   settings: TripSettings;
   rows: DayRow[];
   customColumns: CustomColumn[];
-  createdBy?: string; 
+  createdBy?: string;
   lastModifiedBy?: string;
-  isPublic?: boolean; 
+  isPublic?: boolean;
 }
 
 export interface TripSettings {
   plannerName: string;
-  customerName: string; 
+  customerName: string;
   peopleCount: number;
   roomCount: number;
   currency: string;
   exchangeRate: number;
-  destinations: string[]; 
+  destinations: string[];
   startDate: string;
-  marginPercent: number; 
+  marginPercent: number;
   tipPerDay: number;
-  
+
   manualTotalPrice?: number;
   manualInclusions?: string;
-  manualExclusions?: string; 
+  manualExclusions?: string;
 }
 
 // Resource Database Types
 export interface CarCostEntry {
   id: string;
-  region: string; 
-  carModel: string; 
-  serviceType: string; 
-  passengers: number; 
-  priceLow: number; 
-  priceHigh: number; 
-  description?: string; 
-  lastUpdated?: number; 
-  createdBy?: string; 
-  isPublic?: boolean; 
+  region: string;
+  carModel: string;
+  serviceType: string;
+  passengers: number;
+  priceLow: number;
+  priceHigh: number;
+  description?: string;
+  lastUpdated?: number;
+  createdBy?: string;
+  isPublic?: boolean;
 }
 
 export interface PoiCity {
@@ -150,8 +151,8 @@ export interface PoiSpot {
   cityId: string;
   name: string;
   price: number;
-  description?: string; 
-  lastUpdated?: number; 
+  description?: string;
+  lastUpdated?: number;
   createdBy?: string;
   isPublic?: boolean;
 }
@@ -162,8 +163,8 @@ export interface PoiHotel {
   name: string;
   roomType: string;
   price: number;
-  description?: string; 
-  lastUpdated?: number; 
+  description?: string;
+  lastUpdated?: number;
   createdBy?: string;
   isPublic?: boolean;
 }
@@ -173,19 +174,31 @@ export interface PoiActivity {
   cityId: string;
   name: string;
   price: number;
-  description?: string; 
-  lastUpdated?: number; 
+  description?: string;
+  lastUpdated?: number;
+  createdBy?: string;
+  isPublic?: boolean;
+}
+
+export interface PoiRestaurant {
+  id: string;
+  cityId: string;
+  name: string;
+  cuisineType?: string;  // 中餐/日料/西餐/etc
+  avgPrice: number;
+  dietaryTags?: string;  // 素食/清真/无麸质/etc
+  mealType?: string;     // 早餐/午餐/晚餐/全天
   createdBy?: string;
   isPublic?: boolean;
 }
 
 export interface PoiOther {
   id: string;
-  country: string; 
+  country: string;
   name: string;
   price: number;
-  description?: string; 
-  lastUpdated?: number; 
+  description?: string;
+  lastUpdated?: number;
   createdBy?: string;
   isPublic?: boolean;
 }
@@ -194,9 +207,9 @@ export interface CountryFile {
   id: string;
   country: string;
   name: string;
-  type: string; 
+  type: string;
   size: number;
-  data: string; 
+  data: string;
   uploadDate: number;
   createdBy?: string;
   isPublic?: boolean;
@@ -226,7 +239,7 @@ export type UserRole = 'super_admin' | 'admin' | 'user';
 
 export interface User {
   username: string;
-  password: string; 
+  password: string;
   role: UserRole;
   createdAt: number;
 }
@@ -235,6 +248,6 @@ export interface AuditLog {
   id: string;
   timestamp: number;
   username: string;
-  action: string; 
+  action: string;
   details: string;
 }

@@ -1,4 +1,4 @@
-import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, ResourceDocument } from '../types';
+import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiRestaurant, ResourceDocument } from '../types';
 import { getAuthToken } from './apiClient';
 
 const API_BASE = '/api/resources';
@@ -116,4 +116,19 @@ export const resourceApi = {
   createTransport: (data: Partial<CarCostEntry>) => fetchJson(`${API_BASE}/transports`, { method: 'POST', body: JSON.stringify(data) }),
   updateTransport: (id: string, data: Partial<CarCostEntry>) => fetchJson(`${API_BASE}/transports/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteTransport: (id: string) => fetchJson(`${API_BASE}/transports/${id}`, { method: 'DELETE' }),
+
+  listRestaurants: (params: { city_id?: string; city_name?: string[]; cuisine_type?: string; search?: string; page?: number; size?: number; scope?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (params.city_id) q.set('city_id', params.city_id);
+    if (params.city_name) params.city_name.forEach((n) => q.append('city_name', n));
+    if (params.cuisine_type) q.set('cuisine_type', params.cuisine_type);
+    if (params.search) q.set('search', params.search);
+    if (params.scope) q.set('scope', params.scope);
+    q.set('page', (params.page || 1).toString());
+    q.set('size', (params.size || 100).toString());
+    return fetchJson(`${API_BASE}/restaurants?${q.toString()}`);
+  },
+  createRestaurant: (data: Partial<PoiRestaurant>) => fetchJson(`${API_BASE}/restaurants`, { method: 'POST', body: JSON.stringify(data) }),
+  updateRestaurant: (id: string, data: Partial<PoiRestaurant>) => fetchJson(`${API_BASE}/restaurants/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteRestaurant: (id: string) => fetchJson(`${API_BASE}/restaurants/${id}`, { method: 'DELETE' }),
 };
