@@ -453,7 +453,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     };
 
     const togglePublicRemote = async <T extends { id: string, isPublic?: boolean }>(
-        kind: 'transport' | 'spot' | 'hotel' | 'activity',
+        kind: 'transport' | 'spot' | 'hotel' | 'activity' | 'restaurant',
         items: T[],
         updater: (items: T[]) => void,
         item: T
@@ -466,6 +466,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
         if (kind === 'transport') await resourceApi.updateTransport(item.id, { isPublic: target.isPublic });
         else if (kind === 'spot') await resourceApi.updateSpot(item.id, { isPublic: target.isPublic });
         else if (kind === 'hotel') await resourceApi.updateHotel(item.id, { isPublic: target.isPublic });
+        else if (kind === 'restaurant') await resourceApi.updateRestaurant(item.id, { isPublic: target.isPublic });
         else if (kind === 'activity') await resourceApi.updateActivity(item.id, { isPublic: target.isPublic });
     };
 
@@ -573,7 +574,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     };
 
     const deleteItemRemote = async <T extends { id: string, createdBy?: string, isPublic?: boolean }>(
-        kind: 'transport' | 'city' | 'spot' | 'hotel' | 'activity',
+        kind: 'transport' | 'city' | 'spot' | 'hotel' | 'activity' | 'restaurant',
         items: T[],
         updater: (newItems: T[]) => void,
         id: string,
@@ -586,6 +587,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
         else if (kind === 'city') await resourceApi.deleteCity(id);
         else if (kind === 'spot') await resourceApi.deleteSpot(id);
         else if (kind === 'hotel') await resourceApi.deleteHotel(id);
+        else if (kind === 'restaurant') await resourceApi.deleteRestaurant(id);
         else if (kind === 'activity') await resourceApi.deleteActivity(id);
         updater(items.filter(i => i.id !== id));
         markAsUpdated();
@@ -606,7 +608,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     };
 
     const handleCreateRemote = async <T,>(
-        kind: 'transport' | 'city' | 'spot' | 'hotel' | 'activity',
+        kind: 'transport' | 'city' | 'spot' | 'hotel' | 'activity' | 'restaurant',
         payload: any,
         updater: (items: T[]) => void,
         currentItems: T[]
@@ -617,6 +619,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
         else if (kind === 'city') created = await resourceApi.createCity(payload);
         else if (kind === 'spot') created = await resourceApi.createSpot(payload);
         else if (kind === 'hotel') created = await resourceApi.createHotel(payload);
+        else if (kind === 'restaurant') created = await resourceApi.createRestaurant(payload);
         else if (kind === 'activity') created = await resourceApi.createActivity(payload);
         if (!created) return;
         updater([...currentItems, normalizeOwner(created)]);
@@ -1018,7 +1021,8 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                 <button onClick={() => {
                                                     const base = { cityId: currentCityId, name: '', price: 0 };
                                                     if (poiTab === 'spot') handleCreateRemote('spot', { ...base, isPublic: isSuperAdmin }, onUpdatePoiSpots, poiSpots);
-                                                    else if (poiTab === 'hotel') handleCreateRemote('hotel', { ...base, roomType: '标准间', isPublic: isSuperAdmin }, onUpdatePoiHotels, poiHotels);
+                                                    else if (poiTab === 'hotel') handleCreateRemote('hotel', { ...base, roomType: '', isPublic: isSuperAdmin }, onUpdatePoiHotels, poiHotels);
+                                                    else if (poiTab === 'restaurant') handleCreateRemote('restaurant', { cityId: currentCityId, name: '', avgPrice: 0, cuisineType: '', isPublic: isSuperAdmin }, onUpdatePoiRestaurants, poiRestaurants);
                                                     else handleCreateRemote('activity', { ...base, isPublic: isSuperAdmin }, onUpdatePoiActivities, poiActivities);
                                                 }} className="m-4 mx-6 text-sm text-gray-500 flex items-center justify-center gap-2 hover:bg-white hover:text-blue-600 hover:border-blue-300 border border-dashed border-gray-300 py-3 rounded-lg transition-all shadow-sm group"><Plus size={16} className="text-gray-400 group-hover:text-blue-500 transition-colors" /> 添加资源</button>
                                             </div>
