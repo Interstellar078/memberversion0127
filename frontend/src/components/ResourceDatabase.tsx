@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Plus, Trash2, X, Car, Hotel, Globe, MapPin, Search, Ticket, Palmtree, PackagePlus, Eraser, ChevronRight } from 'lucide-react';
+import { Plus, Trash2, X, Car, Hotel, Globe, MapPin, Search, Ticket, Palmtree, PackagePlus, Eraser, ChevronRight, Utensils } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, ResourceDocument, User } from '../types';
+import { CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiRestaurant, PoiOther, CountryFile, ResourceDocument, User } from '../types';
 import { generateUUID } from '../utils/dateUtils';
 import { resourceApi } from '../services/resourceApi';
 import { StorageService } from '../services/storageService';
@@ -14,6 +14,7 @@ interface ResourceDatabaseProps {
     poiSpots: PoiSpot[];
     poiHotels: PoiHotel[];
     poiActivities: PoiActivity[];
+    poiRestaurants: PoiRestaurant[];
     poiOthers?: PoiOther[];
     countryFiles: CountryFile[];
     onUpdateCarDB: (db: CarCostEntry[] | ((prev: CarCostEntry[]) => CarCostEntry[])) => void;
@@ -21,6 +22,7 @@ interface ResourceDatabaseProps {
     onUpdatePoiSpots: (db: PoiSpot[] | ((prev: PoiSpot[]) => PoiSpot[])) => void;
     onUpdatePoiHotels: (db: PoiHotel[] | ((prev: PoiHotel[]) => PoiHotel[])) => void;
     onUpdatePoiActivities: (db: PoiActivity[] | ((prev: PoiActivity[]) => PoiActivity[])) => void;
+    onUpdatePoiRestaurants: (db: PoiRestaurant[] | ((prev: PoiRestaurant[]) => PoiRestaurant[])) => void;
     onUpdatePoiOthers?: (db: PoiOther[] | ((prev: PoiOther[]) => PoiOther[])) => void;
     onUpdateCountryFiles: (files: CountryFile[] | ((prev: CountryFile[]) => CountryFile[])) => void;
     isReadOnly?: boolean;
@@ -31,8 +33,8 @@ interface ResourceDatabaseProps {
 
 export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     isOpen, onClose,
-    carDB, poiCities, poiSpots, poiHotels, poiActivities, poiOthers = [], countryFiles,
-    onUpdateCarDB, onUpdatePoiCities, onUpdatePoiSpots, onUpdatePoiHotels, onUpdatePoiActivities, onUpdatePoiOthers, onUpdateCountryFiles,
+    carDB, poiCities, poiSpots, poiHotels, poiActivities, poiRestaurants, poiOthers = [], countryFiles,
+    onUpdateCarDB, onUpdatePoiCities, onUpdatePoiSpots, onUpdatePoiHotels, onUpdatePoiActivities, onUpdatePoiRestaurants, onUpdatePoiOthers, onUpdateCountryFiles,
     isReadOnly = false,
     currentUser,
     onActivity,
@@ -42,7 +44,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     // activeSection: 'transport' | 'other' | cityId
     const [activeSection, setActiveSection] = useState<string>('transport');
 
-    const [poiTab, setPoiTab] = useState<'spot' | 'hotel' | 'activity'>('spot');
+    const [poiTab, setPoiTab] = useState<'spot' | 'hotel' | 'activity' | 'restaurant'>('spot');
 
     const [newCountryName, setNewCountryName] = useState('');
     const [isAddingCountry, setIsAddingCountry] = useState(false);
@@ -337,6 +339,10 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                     const hotels = await resourceApi.listHotels({ city_id: currentCityId, page: 1, size: 50 });
                     const norm = (hotels || []).map(normalizeOwner);
                     onUpdatePoiHotels((prev) => mergeByCity(prev, currentCityId, norm));
+                } else if (poiTab === 'restaurant') {
+                    const restaurants = await resourceApi.listRestaurants({ city_id: currentCityId, page: 1, size: 50 });
+                    const norm = (restaurants || []).map(normalizeOwner);
+                    onUpdatePoiRestaurants((prev) => mergeByCity(prev, currentCityId, norm));
                 } else {
                     const activities = await resourceApi.listActivities({ city_id: currentCityId, page: 1, size: 50 });
                     const norm = (activities || []).map(normalizeOwner);
@@ -359,6 +365,10 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                 const hotels = await resourceApi.listHotels({ city_id: currentCityId, search: term, page: 1, size: 50 });
                 const norm = (hotels || []).map(normalizeOwner);
                 onUpdatePoiHotels((prev) => mergeByCity(prev, currentCityId, norm));
+            } else if (poiTab === 'restaurant') {
+                const restaurants = await resourceApi.listRestaurants({ city_id: currentCityId, search: term, page: 1, size: 50 });
+                const norm = (restaurants || []).map(normalizeOwner);
+                onUpdatePoiRestaurants((prev) => mergeByCity(prev, currentCityId, norm));
             } else {
                 const activities = await resourceApi.listActivities({ city_id: currentCityId, search: term, page: 1, size: 50 });
                 const norm = (activities || []).map(normalizeOwner);
@@ -412,20 +422,26 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     };
 
 
+
     useEffect(() => {
         if (!currentCityId) return;
-        if (!resourceSearchTerm.trim()) {
-            runResourceSearch('');
-            return;
-        }
-        runResourceSearch();
-    }, [poiTab, currentCityId]);
+
+        // 使用防抖技术：用户停止输入 500ms 后自动触发搜索
+        const timer = setTimeout(() => {
+            runResourceSearch();
+        }, 500);
+
+        return () => clearTimeout(timer);
+    }, [poiTab, currentCityId, resourceSearchTerm]);
+
 
 
     const currentSpots = poiSpots.filter(s => s.cityId === currentCityId && isVisible(s));
-    const currentActivities = poiActivities.filter(a => a.cityId === currentCityId && isVisible(a));
     const currentHotels = poiHotels.filter(h => h.cityId === currentCityId && isVisible(h));
-    const hasAutoResults = poiTab === 'spot' ? currentSpots.length > 0 : poiTab === 'hotel' ? currentHotels.length > 0 : currentActivities.length > 0;
+    const currentActivities = poiActivities.filter(a => a.cityId === currentCityId && isVisible(a));
+    const currentRestaurants = poiRestaurants.filter(r => r.cityId === currentCityId && isVisible(r));
+
+    const hasAutoResults = poiTab === 'spot' ? currentSpots.length > 0 : poiTab === 'hotel' ? currentHotels.length > 0 : poiTab === 'restaurant' ? currentRestaurants.length > 0 : currentActivities.length > 0;
     const shouldShowResults = resourceSearchTerm.trim().length > 0 || hasAutoResults;
 
     // Helper to toggle Public status (Super Admin only)
@@ -507,7 +523,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     };
 
     const updateItemRemote = <T extends { id: string, createdBy?: string, isPublic?: boolean }>(
-        kind: 'transport' | 'city' | 'spot' | 'hotel' | 'activity',
+        kind: 'transport' | 'city' | 'spot' | 'hotel' | 'activity' | 'restaurant',
         items: T[],
         updater: (newItems: T[]) => void,
         id: string,
@@ -538,6 +554,8 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                 await resourceApi.updateHotel(id, { name: updated.name, roomType: updated.roomType, price: updated.price, cityId: updated.cityId, isPublic: updated.isPublic });
             } else if (kind === 'activity') {
                 await resourceApi.updateActivity(id, { name: updated.name, price: updated.price, cityId: updated.cityId, isPublic: updated.isPublic });
+            } else if (kind === 'restaurant') {
+                await resourceApi.updateRestaurant(id, { name: updated.name, avgPrice: updated.avgPrice, cuisineType: updated.cuisineType, cityId: updated.cityId, isPublic: updated.isPublic });
             }
         });
     };
@@ -886,7 +904,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                     <div className="flex-1 flex flex-col overflow-hidden animate-fade-in">
                                         {/* In-Content Tabs */}
                                         <div className="px-6 py-2 border-b border-gray-200 bg-white flex gap-6">
-                                            {[{ id: 'spot', label: '景点/门票', Icon: Ticket }, { id: 'hotel', label: '酒店', Icon: Hotel }, { id: 'activity', label: '活动', Icon: Palmtree }].map(tab => (
+                                            {[{ id: 'spot', label: '景点/门票', Icon: Ticket }, { id: 'hotel', label: '酒店', Icon: Hotel }, { id: 'activity', label: '活动', Icon: Palmtree }, { id: 'restaurant', label: '餐饮', Icon: Utensils }].map(tab => (
                                                 <button key={tab.id} onClick={() => setPoiTab(tab.id as any)} className={`pb-2 text-sm font-medium border-b-2 flex items-center gap-2 transition-colors ${poiTab === tab.id ? 'border-blue-600 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
                                                     <tab.Icon size={16} /> {tab.label}
                                                 </button>
@@ -929,11 +947,12 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                             <th className="w-12"></th>
                                                         </tr></thead>
                                                         <tbody className="divide-y divide-gray-200">
-                                                            {(shouldShowResults ? (poiTab === 'spot' ? currentSpots : poiTab === 'hotel' ? currentHotels : currentActivities) : []).map(item => (
+                                                            {(shouldShowResults ? (poiTab === 'spot' ? currentSpots : poiTab === 'hotel' ? currentHotels : poiTab === 'restaurant' ? currentRestaurants : currentActivities) : []).map(item => (
                                                                 <tr key={item.id} className="hover:bg-gray-50/50 transition-colors">
                                                                     <td className="px-4 py-2"><input onKeyDown={handleEnterKey} disabled={!canEdit(item)} className="w-full text-sm border-gray-300 rounded disabled:bg-transparent disabled:border-none focus:ring-1 focus:ring-blue-500" value={item.name} onChange={(e) => {
                                                                         if (poiTab === 'spot') updateItemRemote<PoiSpot>('spot', poiSpots, onUpdatePoiSpots, item.id, { name: e.target.value });
                                                                         else if (poiTab === 'hotel') updateItemRemote<PoiHotel>('hotel', poiHotels, onUpdatePoiHotels, item.id, { name: e.target.value });
+                                                                        else if (poiTab === 'restaurant') updateItemRemote<PoiRestaurant>('restaurant', poiRestaurants, onUpdatePoiRestaurants, item.id, { name: e.target.value });
                                                                         else updateItemRemote<PoiActivity>('activity', poiActivities, onUpdatePoiActivities, item.id, { name: e.target.value });
                                                                     }} /></td>
 
@@ -947,6 +966,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                                                 const val = parseFloat(e.target.value) || 0;
                                                                                 if (poiTab === 'spot') updateItemRemote<PoiSpot>('spot', poiSpots, onUpdatePoiSpots, item.id, { price: val });
                                                                                 else if (poiTab === 'hotel') updateItemRemote<PoiHotel>('hotel', poiHotels, onUpdatePoiHotels, item.id, { price: val });
+                                                                                else if (poiTab === 'restaurant') updateItemRemote<PoiRestaurant>('restaurant', poiRestaurants, onUpdatePoiRestaurants, item.id, { avgPrice: val });
                                                                                 else updateItemRemote<PoiActivity>('activity', poiActivities, onUpdatePoiActivities, item.id, { price: val });
                                                                             }} />
                                                                         ) : <span className="text-sm text-gray-400 font-mono">****</span>}
@@ -955,6 +975,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                                     <td className="px-4 py-2"><input onKeyDown={handleEnterKey} disabled={!canEdit(item)} className="w-full text-sm border-gray-300 rounded disabled:bg-transparent disabled:border-none" value={item.description || ''} onChange={(e) => {
                                                                         if (poiTab === 'spot') updateItemRemote<PoiSpot>('spot', poiSpots, onUpdatePoiSpots, item.id, { description: e.target.value });
                                                                         else if (poiTab === 'hotel') updateItemRemote<PoiHotel>('hotel', poiHotels, onUpdatePoiHotels, item.id, { description: e.target.value });
+                                                                        else if (poiTab === 'restaurant') updateItemRemote<PoiRestaurant>('restaurant', poiRestaurants, onUpdatePoiRestaurants, item.id, { cuisineType: e.target.value });
                                                                         else updateItemRemote<PoiActivity>('activity', poiActivities, onUpdatePoiActivities, item.id, { description: e.target.value });
                                                                     }} /></td>
 
@@ -967,6 +988,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                                                     <input type="checkbox" className="sr-only peer" checked={!!item.isPublic} onChange={() => {
                                                                                         if (poiTab === 'spot') togglePublicRemote('spot', poiSpots, onUpdatePoiSpots, item as PoiSpot);
                                                                                         else if (poiTab === 'hotel') togglePublicRemote('hotel', poiHotels, onUpdatePoiHotels, item as PoiHotel);
+                                                                                        else if (poiTab === 'restaurant') togglePublicRemote('restaurant', poiRestaurants, onUpdatePoiRestaurants, item as PoiRestaurant);
                                                                                         else togglePublicRemote('activity', poiActivities, onUpdatePoiActivities, item as PoiActivity);
                                                                                     }} />
                                                                                     <div className="w-8 h-4 bg-gray-200 peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-blue-100 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600"></div>
@@ -982,6 +1004,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                                     <td className="px-4 text-center">{canEdit(item) && <button onClick={() => {
                                                                         if (poiTab === 'spot') deleteItemRemote('spot', poiSpots, onUpdatePoiSpots, item.id, '景点');
                                                                         else if (poiTab === 'hotel') deleteItemRemote('hotel', poiHotels, onUpdatePoiHotels, item.id, '酒店');
+                                                                        else if (poiTab === 'restaurant') deleteItemRemote('restaurant', poiRestaurants, onUpdatePoiRestaurants, item.id, '餐饮');
                                                                         else deleteItemRemote('activity', poiActivities, onUpdatePoiActivities, item.id, '活动');
                                                                     }}><Trash2 size={14} className="text-gray-300 hover:text-red-500" /></button>}</td>
                                                                 </tr>

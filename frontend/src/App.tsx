@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Plus, Trash2, Calendar, Save, CheckCircle, Library, Search, X, RefreshCw, LayoutGrid, Table as TableIcon } from 'lucide-react';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
-import { DayRow, TripSettings, TransportType, CustomColumn, SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, User, CountryFile, TransportItem, HotelItem, GeneralItem } from './types';
+import { DayRow, TripSettings, TransportType, CustomColumn, SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiRestaurant, PoiOther, User, CountryFile, TransportItem, HotelItem, GeneralItem } from './types';
 import { GlobalSettings } from './components/GlobalSettings';
 import { ResourceDatabase } from './components/ResourceDatabase';
 import { AuthModal } from './components/AuthModal';
@@ -60,6 +60,7 @@ export default function App() {
     const [poiSpots, setPoiSpots] = useState<PoiSpot[]>([]);
     const [poiHotels, setPoiHotels] = useState<PoiHotel[]>([]);
     const [poiActivities, setPoiActivities] = useState<PoiActivity[]>([]);
+    const [poiRestaurants, setPoiRestaurants] = useState<PoiRestaurant[]>([]);
     const [poiOthers, setPoiOthers] = useState<PoiOther[]>([]);
     const [countryFiles, setCountryFiles] = useState<CountryFile[]>([]);
 
@@ -138,7 +139,7 @@ export default function App() {
         ticketCost: 85, activityCost: 85, otherCost: 85
     });
 
-    const totalCost = useMemo(() => rows.reduce((acc, r) => acc + r.transportCost + r.hotelCost + r.ticketCost + r.activityCost + r.otherCost, 0), [rows]);
+    const totalCost = useMemo(() => rows.reduce((acc, r) => acc + r.transportCost + r.hotelCost + r.ticketCost + r.activityCost + (r.restaurantCost || 0) + r.otherCost, 0), [rows]);
 
     // --- PERMISSION HELPERS ---
     const isSuperAdmin = currentUser?.role === 'super_admin' || currentUser?.role === 'admin';
@@ -240,8 +241,24 @@ export default function App() {
             // --- Phase 2: Core Resources (light) ---
             // Keep initial load light; heavy resources are loaded on demand.
             try {
-                const cities = await StorageService.getCities();
+                const [cities, spots, hotels, activities, restaurants, others, files, carData] = await Promise.all([
+                    StorageService.getCities(),
+                    StorageService.getSpots(),
+                    StorageService.getHotels(),
+                    StorageService.getActivities(),
+                    StorageService.getRestaurants(),
+                    StorageService.getOthers(),
+                    StorageService.getFiles(),
+                    StorageService.getCars()
+                ]);
                 setPoiCities(cities);
+                setPoiSpots(spots);
+                setPoiHotels(hotels);
+                setPoiActivities(activities);
+                setPoiRestaurants(restaurants);
+                setPoiOthers(others);
+                setCountryFiles(files);
+                setCarDB(carData);
             } catch (e) {
                 console.error("Failed to load core resources", e);
                 setNotification({ show: true, message: '基础资源加载失败，请稍后重试。' });
@@ -275,6 +292,7 @@ export default function App() {
     useDebouncedSave(poiSpots, StorageService.saveSpots);
     useDebouncedSave(poiHotels, StorageService.saveHotels);
     useDebouncedSave(poiActivities, StorageService.saveActivities);
+    useDebouncedSave(poiRestaurants, StorageService.saveRestaurants);
     useDebouncedSave(poiOthers, StorageService.saveOthers);
     useDebouncedSave(countryFiles, StorageService.saveFiles);
     useDebouncedSave(savedTrips, StorageService.saveTrips);
@@ -314,6 +332,12 @@ export default function App() {
     };
 
     const handleOpenResources = async () => {
+        // 检查用户是否已登录
+        if (!currentUser) {
+            setShowAuthModal(true);
+            return;
+        }
+
         if (isRefreshingResources) return;
         setIsRefreshingResources(true);
         setCloudStatus('syncing');
@@ -363,12 +387,14 @@ export default function App() {
             hotelDetails: [],
             ticketDetails: [],
             activityDetails: [],
+            restaurantDetails: [],  // NEW
             otherDetails: [],
             description: '',
             transportCost: 0,
             hotelCost: 0,
             ticketCost: 0,
             activityCost: 0,
+            restaurantCost: 0,  // NEW
             otherCost: 0,
             customCosts: {},
             manualCostFlags: {},
@@ -498,7 +524,7 @@ export default function App() {
             const nextRow = newRows[index + 1];
             const nextRowCities = extractCitiesFromRoute(nextRow.route);
             if (nextRowCities.length === 0) {
-                newRows[index + 1] = { ...nextRow, route: `${currentDest}-` };
+                newRows[index + 1] = { ...nextRow, route: `${currentDest} -` };
             }
         }
         setRows(newRows);
@@ -648,7 +674,7 @@ export default function App() {
     };
 
     const handleQuickSave = (type: 'route' | 'hotel' | 'ticket' | 'activity', rowIndex: number) => {
-        if (!currentUser) { alert("请先登录"); setShowAuthModal(true); return; }
+        if (!currentUser) { setShowAuthModal(true); return; }
         const row = rows[rowIndex];
         const routeCities = extractCitiesFromRoute(row.route);
         let itemsDisplay = '';
@@ -758,10 +784,10 @@ export default function App() {
         const planner = currentUser?.username || settings.plannerName || '未命名';
         let country = '未定国家';
         if (settings.destinations.length > 0) { country = settings.destinations.join('+'); } else { const allCities = rows.flatMap(r => extractCitiesFromRoute(r.route)); if (allCities.length > 0) { const c = poiCities.find(pc => pc.name === allCities[0]); if (c) country = c.country; } }
-        const duration = `${rows.length}天`;
+        const duration = `${rows.length} 天`;
         const now = new Date();
-        const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-        const smartName = `${planner}_${country}_${duration}_${dateStr}`;
+        const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')} `;
+        const smartName = `${planner}_${country}_${duration}_${dateStr} `;
         if (activeTripId) { const currentTrip = savedTrips.find(t => t.id === activeTripId); setSaveName(currentTrip ? currentTrip.name : smartName); } else { setSaveName(smartName); }
         setShowSaveModal(true);
     };
@@ -825,7 +851,7 @@ export default function App() {
         setCustomColumns(trip.customColumns || []);
         setActiveTripId(trip.id);
         setShowSavedList(false);
-        setNotification({ show: true, message: `已加载: ${trip.name}` });
+        setNotification({ show: true, message: `已加载: ${trip.name} ` });
         setTimeout(() => setNotification({ show: false, message: '' }), 3000);
     };
 
@@ -852,18 +878,18 @@ export default function App() {
         const headers = ["第几天", "日期", "路线", "交通方式", "车型详情", "酒店详情", "行程详情", "门票详情", "活动详情", "其它服务详情", "交通费", "酒店费", "门票费", "活动费", "其它费"];
         const dataRows = rows.map(r => [
             r.dayIndex, r.date, r.route, r.transport.join(', '),
-            r.transportDetails.map(t => `${t.model}x${t.quantity}(${t.priceType === 'high' ? '旺' : '淡'})`).join('\n'),
-            r.hotelDetails.map(h => `${h.name}-${h.roomType}x${h.quantity}`).join('\n'),
+            r.transportDetails.map(t => `${t.model}x${t.quantity} (${t.priceType === 'high' ? '旺' : '淡'})`).join('\n'),
+            r.hotelDetails.map(h => `${h.name} -${h.roomType}x${h.quantity} `).join('\n'),
             r.description,
-            r.ticketDetails.map(t => `${t.name}x${t.quantity}`).join('\n'),
-            r.activityDetails.map(a => `${a.name}x${a.quantity}`).join('\n'),
-            r.otherDetails.map(o => `${o.name}x${o.quantity}`).join('\n'),
+            r.ticketDetails.map(t => `${t.name}x${t.quantity} `).join('\n'),
+            r.activityDetails.map(a => `${a.name}x${a.quantity} `).join('\n'),
+            r.otherDetails.map(o => `${o.name}x${o.quantity} `).join('\n'),
             r.transportCost, r.hotelCost, r.ticketCost, r.activityCost, r.otherCost
         ]);
         const quotePrice = Math.round(totalCost * settings.exchangeRate / (1 - settings.marginPercent / 100));
         const sheetData = [
             headers, ...dataRows, [], [],
-            ["总报价 / Total Quote", `${quotePrice.toLocaleString()} ${settings.currency}`],
+            ["总报价 / Total Quote", `${quotePrice.toLocaleString()} ${settings.currency} `],
             [], ["费用包含 / Inclusions"], [settings.manualInclusions], [], ["费用不含 / Exclusions"], [settings.manualExclusions]
         ];
         const ws = XLSX.utils.aoa_to_sheet(sheetData);
@@ -966,12 +992,12 @@ export default function App() {
                         } else if (item.s_city || item.e_city) {
                             const start = item.s_city || currentRow.route.split('-')[0] || '';
                             const end = item.e_city || currentRow.route.split('-')[1] || '';
-                            if (start && end) routeStr = `${start}-${end}`;
+                            if (start && end) routeStr = `${start} -${end} `;
                         }
 
                         const ticketIds = Array.isArray(item.ticketIds) ? item.ticketIds : [];
                         const activityIds = Array.isArray(item.activityIds) ? item.activityIds : [];
-                                        const ticketItems: GeneralItem[] = normalizeList(item.ticketName).map((s, i) => ({
+                        const ticketItems: GeneralItem[] = normalizeList(item.ticketName).map((s, i) => ({
                             id: ticketIds[i] || generateUUID(),
                             name: s,
                             quantity: settings.peopleCount,
@@ -1025,7 +1051,7 @@ export default function App() {
                     role: 'assistant',
                     content: `已为您更新行程！
 
-**主要变更**：
+** 主要变更 **：
 - 调整了 ${result.itinerary.length} 天的安排。
 - 若涉及新城市，已自动更新目的地列表。
 
@@ -1207,19 +1233,19 @@ ${msg}
                 />
             </div>
 
-            {showAuthModal && <AuthModal onLoginSuccess={async (u) => { setCurrentUser(u); setShowAuthModal(false); setIsAppLoading(true); await loadCloudData(u); setIsAppLoading(false); setNotification({ show: true, message: `欢迎回来, ${u.username}` }); setTimeout(() => setNotification({ show: false, message: '' }), 3000); }} />}
+            {showAuthModal && <AuthModal onLoginSuccess={async (u) => { setCurrentUser(u); setShowAuthModal(false); setIsAppLoading(true); await loadCloudData(u); setIsAppLoading(false); setNotification({ show: true, message: `欢迎回来, ${u.username} ` }); setTimeout(() => setNotification({ show: false, message: '' }), 3000); }} />}
             {showAdminDashboard && currentUser && <AdminDashboard currentUser={currentUser} onClose={() => setShowAdminDashboard(false)} />}
             <ResourceDatabase
                 isOpen={isResourceOpen} onClose={() => setIsResourceOpen(false)}
-                carDB={carDB} poiCities={poiCities} poiSpots={poiSpots} poiHotels={poiHotels} poiActivities={poiActivities} poiOthers={poiOthers} countryFiles={countryFiles}
-                onUpdateCarDB={setCarDB} onUpdatePoiCities={setPoiCities} onUpdatePoiSpots={setPoiSpots} onUpdatePoiHotels={setPoiHotels} onUpdatePoiActivities={setPoiActivities} onUpdatePoiOthers={setPoiOthers} onUpdateCountryFiles={setCountryFiles}
+                carDB={carDB} poiCities={poiCities} poiSpots={poiSpots} poiHotels={poiHotels} poiActivities={poiActivities} poiRestaurants={poiRestaurants} poiOthers={poiOthers} countryFiles={countryFiles}
+                onUpdateCarDB={setCarDB} onUpdatePoiCities={setPoiCities} onUpdatePoiSpots={setPoiSpots} onUpdatePoiHotels={setPoiHotels} onUpdatePoiActivities={setPoiActivities} onUpdatePoiRestaurants={setPoiRestaurants} onUpdatePoiOthers={setPoiOthers} onUpdateCountryFiles={setCountryFiles}
                 isReadOnly={false}
                 currentUser={currentUser}
                 onActivity={handleResourceActivity}
                 onForceSave={handleForceSave}
             />
             {showSaveModal && (<div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center"><div className="bg-white p-6 rounded-lg shadow-xl w-96"><h3 className="text-lg font-bold mb-4">保存行程</h3><div className="mb-4"><label className="block text-sm font-medium text-gray-700 mb-1">行程名称</label><input type="text" className="w-full border border-gray-300 rounded p-2" value={saveName} onChange={(e) => setSaveName(e.target.value)} /></div><div className="flex justify-end gap-2"><button onClick={() => setShowSaveModal(false)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={handleConfirmSave} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">确认保存</button></div></div></div>)}
-            {showSavedList && (<div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"><div className="bg-white rounded-xl shadow-xl w-full max-w-4xl h-[80vh] flex flex-col"><div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl"><h3 className="font-bold text-lg flex items-center gap-2"><Library size={20} /> 我的行程库</h3><button onClick={() => setShowSavedList(false)}><X size={24} className="text-gray-400 hover:text-gray-600" /></button></div><div className="p-4 border-b bg-white"><div className="relative"><Search size={16} className="absolute left-3 top-3 text-gray-400" /><input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg" placeholder="搜索..." value={tripSearchTerm} onChange={(e) => setTripSearchTerm(e.target.value)} /></div></div><div className="flex-1 overflow-auto p-4 bg-gray-50"><div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{savedTrips.filter(t => (isSuperAdmin || t.isPublic || t.createdBy === currentUser?.username || (!t.createdBy && true)) && (t.name.includes(tripSearchTerm) || t.settings.destinations.join('').includes(tripSearchTerm))).map(trip => (<div key={trip.id} onClick={() => handleLoadTrip(trip)} className="bg-white p-4 rounded-lg border border-gray-200 hover:shadow-md cursor-pointer transition-shadow group relative"><div className="flex justify-between items-start mb-2"><h4 className="font-bold text-blue-700 line-clamp-1">{trip.name}</h4>{(isSuperAdmin || trip.createdBy === currentUser?.username) && (<button onClick={(e) => { e.stopPropagation(); if (window.confirm(`确认删除?`)) setSavedTrips(savedTrips.filter(t => t.id !== trip.id)); }} className="text-gray-300 hover:text-red-500 p-1"><Trash2 size={14} /></button>)}</div><div className="text-xs text-gray-500 space-y-1"><p>{trip.rows.length}天</p><p>{trip.createdBy || 'Unknown'} {trip.isPublic ? '(公有)' : '(私有)'}</p></div></div>))}</div></div></div></div>)}
+            {showSavedList && (<div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4"><div className="bg-white rounded-xl shadow-xl w-full max-w-4xl h-[80vh] flex flex-col"><div className="p-4 border-b flex justify-between items-center bg-gray-50 rounded-t-xl"><h3 className="font-bold text-lg flex items-center gap-2"><Library size={20} /> 我的行程库</h3><button onClick={() => setShowSavedList(false)}><X size={24} className="text-gray-400 hover:text-gray-600" /></button></div><div className="p-4 border-b bg-white"><div className="relative"><Search size={16} className="absolute left-3 top-3 text-gray-400" /><input type="text" className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg" placeholder="搜索..." value={tripSearchTerm} onChange={(e) => setTripSearchTerm(e.target.value)} /></div></div><div className="flex-1 overflow-auto p-4 bg-gray-50"><div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">{savedTrips.filter(t => (isSuperAdmin || t.isPublic || t.createdBy === currentUser?.username || (!t.createdBy && true)) && (t.name.includes(tripSearchTerm) || t.settings.destinations.join('').includes(tripSearchTerm))).map(trip => (<div key={trip.id} onClick={() => handleLoadTrip(trip)} className="bg-white p-4 rounded-lg border border-gray-200 hover:shadow-md cursor-pointer transition-shadow group relative"><div className="flex justify-between items-start mb-2"><h4 className="font-bold text-blue-700 line-clamp-1">{trip.name}</h4>{(isSuperAdmin || trip.createdBy === currentUser?.username) && (<button onClick={(e) => { e.stopPropagation(); if (window.confirm(`确认删除 ? `)) setSavedTrips(savedTrips.filter(t => t.id !== trip.id)); }} className="text-gray-300 hover:text-red-500 p-1"><Trash2 size={14} /></button>)}</div><div className="text-xs text-gray-500 space-y-1"><p>{trip.rows.length}天</p><p>{trip.createdBy || 'Unknown'} {trip.isPublic ? '(公有)' : '(私有)'}</p></div></div>))}</div></div></div></div>)}
             {qsModal && (<div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center"><div className="bg-white p-6 rounded-lg shadow-xl w-96"><h3 className="text-lg font-bold mb-4 flex items-center gap-2"><Save size={18} /> 快速添加至资源库</h3><div className="space-y-4"><div className="p-3 bg-blue-50 rounded text-sm text-blue-800"><p className="font-bold">内容:</p><p className="mt-1">{qsModal.itemsDisplay}</p></div><div><label className="block text-sm font-medium text-gray-700 mb-1">归属国家</label><select className="w-full border border-gray-300 rounded p-2" value={qsSelectedCountry} onChange={(e) => setQsSelectedCountry(e.target.value)}><option value="">请选择...</option>{Array.from(new Set(poiCities.map(c => c.country))).map(c => (<option key={c} value={c}>{c}</option>))}</select></div></div><div className="flex justify-end gap-2 mt-6"><button onClick={() => setQsModal(null)} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">取消</button><button onClick={performQuickSave} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">确认添加</button></div></div></div>)}
         </div>
     );

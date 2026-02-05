@@ -114,11 +114,13 @@ export const ItineraryTable: React.FC<ItineraryTableProps> = ({
                                 {Th('description', '详情')}
                                 {Th('ticket', '门票')}
                                 {Th('activity', '活动')}
+                                {Th('restaurant', '餐厅')}
                                 {Th('otherService', '其它服务')}
                                 {Th('transportCost', '交通费')}
                                 {Th('hotelCost', '酒店费')}
                                 {Th('ticketCost', '门票费')}
                                 {Th('activityCost', '活动费')}
+                                {Th('restaurantCost', '餐饮费')}
                                 {Th('otherCost', '其它费用')}
                                 <th className="w-10 sticky right-0 bg-gray-50 z-20"></th>
                             </tr>
@@ -248,6 +250,21 @@ export const ItineraryTable: React.FC<ItineraryTableProps> = ({
                                             <button tabIndex={-1} onClick={() => handleQuickSave('activity', index)} className="absolute right-1 top-2 opacity-0 group-hover/cell:opacity-100 text-blue-300 hover:text-blue-600"><PlusCircle size={14} /></button>
                                         </td>
 
+                                        {/* Restaurant Column */}
+                                        <td className="p-1.5 relative group/cell">
+                                            <div className="space-y-1">
+                                                {(row.restaurantDetails || []).map(item => (
+                                                    <div key={item.id} className="flex items-center gap-1 bg-orange-50 p-0.5 rounded border border-orange-200 text-xs">
+                                                        <span className="flex-1 min-w-[60px] px-1 text-gray-700">{item.name}</span>
+                                                        <span className="text-gray-400">x</span>
+                                                        <input type="number" step="0.1" className="w-10 p-0 border-none bg-transparent text-center text-xs" value={item.quantity} onChange={(e) => updateGeneralItem(index, item.id, 'restaurant', { quantity: parseFloat(e.target.value) || 0 })} />
+                                                        <button onClick={() => removeGeneralItem(index, item.id, 'restaurant')} className="text-gray-400 hover:text-red-500"><X size={12} /></button>
+                                                    </div>
+                                                ))}
+                                                {(row.restaurantDetails || []).length === 0 && <div className="text-xs text-gray-400 italic">AI推荐</div>}
+                                            </div>
+                                        </td>
+
                                         {/* Other Services Column */}
                                         <td className="p-1.5">
                                             <div className="space-y-1">
@@ -267,6 +284,7 @@ export const ItineraryTable: React.FC<ItineraryTableProps> = ({
                                         <td className="p-1.5 text-right align-top">{shouldMaskPrice(row.hotelDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.hotelCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.hotelCost} onChange={(e) => updateRow(index, { hotelCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, hotel: true } })} />}</td>
                                         <td className="p-1.5 text-right align-top">{shouldMaskPrice(row.ticketDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.ticketCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.ticketCost} onChange={(e) => updateRow(index, { ticketCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, ticket: true } })} />}</td>
                                         <td className="p-1.5 text-right align-top">{shouldMaskPrice(row.activityDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.activityCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.activityCost} onChange={(e) => updateRow(index, { activityCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, activity: true } })} />}</td>
+                                        <td className="p-1.5 text-right align-top">{shouldMaskPrice((row.restaurantDetails || []).some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.restaurantCost || 0, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.restaurantCost || 0} onChange={(e) => updateRow(index, { restaurantCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, restaurant: true } })} />}</td>
                                         <td className="p-1.5 text-right align-top">{shouldMaskPrice(row.otherDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.otherCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.otherCost} onChange={(e) => updateRow(index, { otherCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, other: true } })} />}</td>
 
                                         <td className="p-1.5 text-center sticky right-0 bg-white group-hover:bg-blue-50/30 z-10 align-top"><button onClick={() => handleDeleteRow(index)} className="text-gray-300 hover:text-red-500"><Trash2 size={14} /></button></td>

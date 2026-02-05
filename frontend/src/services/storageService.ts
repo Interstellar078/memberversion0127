@@ -1,4 +1,4 @@
-import { SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, User, ResourceMetadata } from '../types';
+import { SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiRestaurant, PoiOther, CountryFile, User, ResourceMetadata } from '../types';
 import { apiGet, apiPut, apiPost } from './apiClient';
 import { resourceApi } from './resourceApi';
 
@@ -150,6 +150,14 @@ export const StorageService = {
     return;
   },
   async saveActivities(_data: PoiActivity[]): Promise<void> {
+    return;
+  },
+  async getRestaurants(): Promise<PoiRestaurant[]> {
+    if (!currentUser) return [];
+    const items = await resourceApi.listRestaurants({ page: 1, size: 5000 });
+    return (items || []).map(mapOwner) as any;
+  },
+  async saveRestaurants(_data: PoiRestaurant[]): Promise<void> {
     return;
   },
   async saveOthers(data: PoiOther[]): Promise<void> {

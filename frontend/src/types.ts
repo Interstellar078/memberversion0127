@@ -71,6 +71,7 @@ export interface DayRow {
   hotelCost: number;
   ticketCost: number;
   activityCost: number;
+  restaurantCost?: number;  // NEW: Restaurant dining costs
   otherCost: number;
 
   // Custom dynamic costs
@@ -82,6 +83,7 @@ export interface DayRow {
     hotel?: boolean;
     ticket?: boolean;
     activity?: boolean;
+    restaurant?: boolean;  // NEW
     other?: boolean;
   };
 

@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..prompts import (
@@ -467,6 +468,12 @@ class AIAgentService:
                     item['transportCost'] = total
         return itinerary
 
+    def _safe_rollback(self) -> None:
+        try:
+            self.db.rollback()
+        except Exception:
+            pass
+
     def _memory_owner_id(self, conversation_id: str | None) -> str | None:
         if self.user and self.user.username:
             return self.user.username
@@ -482,7 +489,12 @@ class AIAgentService:
         if not owner_id:
             return None
         key = self._memory_key(conversation_id)
-        row = self.db.execute(select(AppData).where(AppData.owner_id == owner_id, AppData.key == key)).scalar_one_or_none()
+        try:
+            row = self.db.execute(select(AppData).where(AppData.owner_id == owner_id, AppData.key == key)).scalar_one_or_none()
+        except SQLAlchemyError:
+            self._safe_rollback()
+            logger.warning("AI memory load failed; transaction rolled back", exc_info=True)
+            return None
         if row and isinstance(row.value, dict):
             return row.value.get('summary')
         return None
@@ -492,12 +504,17 @@ class AIAgentService:
         if not owner_id:
             return
         key = self._memory_key(conversation_id)
-        row = self.db.execute(select(AppData).where(AppData.owner_id == owner_id, AppData.key == key)).scalar_one_or_none()
-        if row:
-            row.value = {"summary": summary}
-        else:
-            self.db.add(AppData(owner_id=owner_id, key=key, value={"summary": summary}, is_public=False))
-        self.db.commit()
+        try:
+            row = self.db.execute(select(AppData).where(AppData.owner_id == owner_id, AppData.key == key)).scalar_one_or_none()
+            if row:
+                row.value = {"summary": summary}
+            else:
+                self.db.add(AppData(owner_id=owner_id, key=key, value={"summary": summary}, is_public=False))
+            self.db.commit()
+        except SQLAlchemyError:
+            self._safe_rollback()
+            logger.warning("AI memory save failed; transaction rolled back", exc_info=True)
+            return
 
     def _summarize_memory(self, existing: str | None, req: Any) -> str | None:
         if not self.llm:

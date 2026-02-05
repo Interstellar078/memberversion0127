@@ -68,6 +68,24 @@ MIME_BY_EXT = {
     ".webp": "image/webp",
 }
 
+
+def _validate_magic(ext: str, header: bytes) -> bool:
+    if not header:
+        return False
+    if ext == ".pdf":
+        return header.startswith(b"%PDF-")
+    if ext in {".jpg", ".jpeg"}:
+        return header.startswith(b"\xFF\xD8\xFF")
+    if ext == ".png":
+        return header.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext == ".webp":
+        return len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WEBP"
+    if ext in {".docx", ".xlsx", ".pptx"}:
+        return header.startswith(b"PK\x03\x04")
+    if ext in {".doc", ".xls", ".ppt"}:
+        return header.startswith(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1")
+    return True
+
 # --- Helper for Pagination ---
 def paginate_query(query, page: int, size: int):
     return query.offset((page - 1) * size).limit(size)
@@ -654,16 +672,32 @@ def upload_document(
     ext = Path(safe_name).suffix.lower()
     if not ext or ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Unsupported file type")
-    if file.content_type:
-        content_type = file.content_type.lower()
-        if content_type not in ALLOWED_MIME_TYPES and not (content_type.startswith("text/") and ext in {".txt", ".md", ".csv"}):
-            raise HTTPException(status_code=400, detail="Unsupported content type")
+    content_type = (file.content_type or "").lower().strip()
+    if content_type and content_type not in ALLOWED_MIME_TYPES:
+        # Allow generic octet-stream but rely on magic bytes + extension
+        if not (content_type == "application/octet-stream" and ext in ALLOWED_EXTENSIONS):
+            if not (content_type.startswith("text/") and ext in {".txt", ".md", ".csv"}):
+                raise HTTPException(status_code=400, detail="Unsupported content type")
+    expected = MIME_BY_EXT.get(ext)
+    if content_type and expected and content_type not in {expected, "application/octet-stream"}:
+        # Some clients send text/plain for csv/md; allow that
+        if not (content_type.startswith("text/") and ext in {".txt", ".md", ".csv"}):
+            raise HTTPException(status_code=400, detail="Content type mismatch")
     doc_id = str(uuid.uuid4())
     stored_name = f"{doc_id}{ext}"
     dest = UPLOAD_DIR / stored_name
     size = 0
     try:
         with dest.open("wb") as f:
+            first = file.file.read(1024 * 1024)
+            if not first:
+                raise HTTPException(status_code=400, detail="Empty file")
+            if not _validate_magic(ext, first[:512]):
+                raise HTTPException(status_code=400, detail="File signature mismatch")
+            size += len(first)
+            if size > MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="File too large")
+            f.write(first)
             while True:
                 chunk = file.file.read(1024 * 1024)
                 if not chunk:
