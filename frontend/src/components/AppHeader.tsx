@@ -61,7 +61,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
                 <button onClick={handleOpenResources} className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 text-sm font-medium transition-colors">
                     {isRefreshingResources ? <Loader2 size={16} className="animate-spin" /> : <Database size={16} />} 资源库
                 </button>
-                <button onClick={() => setIsChatOpen(!isChatOpen)} className={`flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium transition-colors ${isChatOpen ? 'bg-purple-100 text-purple-700' : 'bg-purple-50 text-purple-700 hover:bg-purple-100'}`}><Sparkles size={16} /> AI 助手</button>
+
             </div>
             <div className="flex items-center gap-4">
                 {notification.show && <div className="text-sm text-green-600 font-medium animate-fade-in bg-green-50 px-3 py-1 rounded-full flex items-center gap-1"><CheckCircle size={14} /> {notification.message}</div>}

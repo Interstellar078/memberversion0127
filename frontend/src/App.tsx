@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Plus, Trash2, Calendar, Save, CheckCircle, Library, Search, X, RefreshCw, LayoutGrid, Table as TableIcon } from 'lucide-react';
+import { Plus, Trash2, Calendar, Save, CheckCircle, Library, Search, X, RefreshCw, LayoutGrid, Table as TableIcon, FileSpreadsheet, ChevronDown, Rocket } from 'lucide-react';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 import { DayRow, TripSettings, TransportType, CustomColumn, SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiRestaurant, PoiOther, User, CountryFile, TransportItem, HotelItem, GeneralItem } from './types';
@@ -129,7 +129,7 @@ export default function App() {
     });
 
     const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-        { id: 'init', role: 'assistant', content: '您好！我是您的智能行程规划助手。\n您可以告诉我您的目的地、天数和偏好，我会为您生成专业行程。\n或者在现有行程上，让我帮您调整细节。', timestamp: Date.now() }
+        { id: 'init', role: 'assistant', content: '您好！我是星艾，您的智能行程规划助手。\n您可以告诉我您的目的地、天数和偏好，我会为您生成专业行程。\n或者在现有行程上，让我帮您调整细节。', timestamp: Date.now() }
     ]);
 
     const [colWidths, setColWidths] = useState<Record<string, number>>({
@@ -1131,27 +1131,14 @@ ${msg}
                     style={{ marginRight: (isChatOpen && chatMode === 'docked' && window.innerWidth >= 1024) ? `${chatWidth}px` : '0px' }}
                 >
                     <div className="flex-1 p-6 overflow-auto">
-                        <div className="flex justify-end mb-4 gap-2">
-                            <div className="bg-white p-1 rounded-lg border border-gray-200 shadow-sm flex">
-                                <button
-                                    onClick={() => setViewMode('table')}
-                                    className={`p-1.5 rounded-md transition-all ${viewMode === 'table' ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
-                                    title="表格视图"
-                                >
-                                    <TableIcon size={18} />
-                                </button>
-                                <button
-                                    onClick={() => setViewMode('card')}
-                                    className={`p-1.5 rounded-md transition-all ${viewMode === 'card' ? 'bg-blue-100 text-blue-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
-                                    title="卡片视图"
-                                >
-                                    <LayoutGrid size={18} />
-                                </button>
-                            </div>
-                        </div>
-
                         <div>
-                            <GlobalSettings settings={settings} updateSettings={(s) => setSettings(prev => ({ ...prev, ...s }))} availableCountries={Array.from(new Set(poiCities.filter(isResourceVisible).map(c => c.country)))} />
+                            <GlobalSettings
+                                settings={settings}
+                                updateSettings={(s) => setSettings(prev => ({ ...prev, ...s }))}
+                                availableCountries={Array.from(new Set(poiCities.filter(isResourceVisible).map(c => c.country)))}
+                                viewMode={viewMode}
+                                setViewMode={setViewMode}
+                            />
                         </div>
 
                         {viewMode === 'table' ? (
@@ -1209,15 +1196,41 @@ ${msg}
                     {/* ... Rest of components ... */}
 
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6 no-print">
-                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-                            <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2"><CheckCircle size={16} className="text-green-600" /> 费用包含</h3>
-                            <textarea className="w-full h-32 p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm" value={settings.manualInclusions} onChange={(e) => setSettings({ ...settings, manualInclusions: e.target.value })} />
-                        </div>
-                        <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
-                            <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2"><X size={16} className="text-red-600" /> 费用不含</h3>
-                            <textarea className="w-full h-32 p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 text-sm" value={settings.manualExclusions} onChange={(e) => setSettings({ ...settings, manualExclusions: e.target.value })} />
-                        </div>
+                    <div className="mt-6 no-print">
+                        <details className="group bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                            <summary className="p-4 flex items-center justify-between cursor-pointer list-none hover:bg-gray-50 transition-colors">
+                                <div className="flex items-center gap-2 font-bold text-gray-700">
+                                    <div className="p-1.5 bg-indigo-50 rounded text-indigo-600">
+                                        <FileSpreadsheet size={18} />
+                                    </div>
+                                    <span>费用包含与不含说明</span>
+                                    <span className="text-xs font-normal text-gray-400 ml-2">(点击展开/收起)</span>
+                                </div>
+                                <div className="transform transition-transform duration-300 group-open:rotate-180 text-gray-400">
+                                    <ChevronDown size={20} />
+                                </div>
+                            </summary>
+                            <div className="p-4 border-t border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-6 bg-gray-50/50">
+                                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                                    <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2"><CheckCircle size={16} className="text-green-600" /> 费用包含</h3>
+                                    <textarea
+                                        className="w-full h-32 p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm transition-shadow"
+                                        value={settings.manualInclusions}
+                                        onChange={(e) => setSettings({ ...settings, manualInclusions: e.target.value })}
+                                        placeholder="请输入费用包含项目..."
+                                    />
+                                </div>
+                                <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
+                                    <h3 className="font-bold text-gray-700 mb-2 flex items-center gap-2"><X size={16} className="text-red-600" /> 费用不含</h3>
+                                    <textarea
+                                        className="w-full h-32 p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm transition-shadow"
+                                        value={settings.manualExclusions}
+                                        onChange={(e) => setSettings({ ...settings, manualExclusions: e.target.value })}
+                                        placeholder="请输入费用不含项目..."
+                                    />
+                                </div>
+                            </div>
+                        </details>
                     </div>
                 </div>
                 <AIChatSidebar
@@ -1231,6 +1244,21 @@ ${msg}
                     mode={chatMode}
                     setMode={setChatMode}
                 />
+
+                {/* Floating AI Launcher (When Sidebar is Closed) */}
+                {!isChatOpen && (
+                    <button
+                        onClick={() => setIsChatOpen(true)}
+                        className="fixed bottom-24 right-6 z-[60] p-4 bg-white text-indigo-600 rounded-full shadow-xl border border-indigo-100 hover:scale-110 transition-transform group hover:shadow-2xl hover:border-indigo-200"
+                        title="唤醒星艾助手"
+                    >
+                        <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-4 w-4 bg-indigo-500 border-2 border-white"></span>
+                        </span>
+                        <Rocket size={28} className="group-hover:rotate-12 transition-transform" />
+                    </button>
+                )}
             </div>
 
             {showAuthModal && <AuthModal onLoginSuccess={async (u) => { setCurrentUser(u); setShowAuthModal(false); setIsAppLoading(true); await loadCloudData(u); setIsAppLoading(false); setNotification({ show: true, message: `欢迎回来, ${u.username} ` }); setTimeout(() => setNotification({ show: false, message: '' }), 3000); }} />}

@@ -1,19 +1,36 @@
 import React from 'react';
 import { TripSettings } from '../types';
-import { Users, Calendar, Globe, Coins } from 'lucide-react';
+import { Users, Calendar, Globe, Coins, Table as TableIcon, LayoutGrid } from 'lucide-react';
 import { MultiSelect } from './MultiSelect';
 
 interface GlobalSettingsProps {
   settings: TripSettings;
   updateSettings: (s: Partial<TripSettings>) => void;
   availableCountries: string[];
+  viewMode: 'table' | 'card';
+  setViewMode: (mode: 'table' | 'card') => void;
 }
 
-export const GlobalSettings: React.FC<GlobalSettingsProps> = ({ settings, updateSettings, availableCountries }) => {
+export const GlobalSettings: React.FC<GlobalSettingsProps> = ({ settings, updateSettings, availableCountries, viewMode, setViewMode }) => {
   return (
     <div className="flex flex-wrap items-center gap-3 mb-4 p-1 no-print">
-
-      {/* Planner Name */}
+      {/* View Switcher - Integrated */}
+      <div className="bg-white p-0.5 rounded-lg border border-gray-200 shadow-sm flex shrink-0 mr-2">
+        <button
+          onClick={() => setViewMode('table')}
+          className={`p-1.5 rounded-md transition-all ${viewMode === 'table' ? 'bg-indigo-50 text-indigo-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+          title="表格视图"
+        >
+          <TableIcon size={16} />
+        </button>
+        <button
+          onClick={() => setViewMode('card')}
+          className={`p-1.5 rounded-md transition-all ${viewMode === 'card' ? 'bg-indigo-50 text-indigo-600 shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
+          title="卡片视图"
+        >
+          <LayoutGrid size={16} />
+        </button>
+      </div>
       <div className="flex items-center gap-2">
         <label className="text-xs text-gray-400 whitespace-nowrap">定制师</label>
         <input

@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { Plus, Trash2, Calendar, FileDown, Settings, Save, MapPin, Navigation, Info, Car, Hotel, Ticket, Palmtree, User, ArrowLeft, ArrowRight, Loader2, Sparkles, Wand2, Database, Rocket, FolderOpen, FileUp, FileSpreadsheet, CheckCircle, Cloud, ShieldAlert, LogOut, Library, GripVertical, AlertTriangle, ChevronDown, ChevronUp, Copy, Edit3, Filter, HardDrive, MinusCircle, PlusCircle, RefreshCw, RotateCcw, Search, Upload, X } from 'lucide-react';
+import { Plus, Trash2, Calendar, FileDown, Settings, Save, MapPin, Navigation, Info, Car, Hotel, Ticket, Palmtree, User, ArrowLeft, ArrowRight, Loader2, Sparkles, Wand2, Database, Rocket, FolderOpen, FileUp, FileSpreadsheet, CheckCircle, Cloud, ShieldAlert, LogOut, Library, GripVertical, AlertTriangle, ChevronDown, ChevronUp, Copy, Edit3, Filter, HardDrive, MinusCircle, PlusCircle, RefreshCw, RotateCcw, Search, Upload, X, DollarSign } from 'lucide-react';
 // import { DragDropContext, Droppable, Draggable, DropResult } from '@hello-pangea/dnd';
 import { DayRow, TripSettings, TransportType, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, TransportItem, HotelItem, GeneralItem } from '../types';
 import { Autocomplete } from './Autocomplete';
@@ -56,6 +56,11 @@ interface ItineraryTableProps {
     removeGeneralItem: (rowIndex: number, itemId: string, type: 'ticket' | 'activity' | 'other') => void;
 }
 
+// 默认空图片
+const DEFAULT_HOTEL_IMAGE = 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&q=80&w=300&h=200';
+const DEFAULT_SPOT_IMAGE = 'https://images.unsplash.com/photo-1476514525535-07fb3b4ae5f1?auto=format&fit=crop&q=80&w=300&h=200';
+const DEFAULT_FOOD_IMAGE = 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&q=80&w=300&h=200'; // Added food image
+
 export const ItineraryTable: React.FC<ItineraryTableProps> = ({
     rows, setRows, settings, setSettings, colWidths, setColWidths, isMember, totalCost,
     setIsChatOpen, handleRefreshCosts, handleDeleteRow, updateRow,
@@ -98,34 +103,91 @@ export const ItineraryTable: React.FC<ItineraryTableProps> = ({
         );
     };
 
+    const totalDays = rows.length;
+
     return (
-        <React.Fragment>
-            {/* DragDropContext removed due to React 19 incompatibility */}
-            <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div className="overflow-x-auto no-scrollbar">
-                    <table className="w-full text-sm text-left border-collapse">
-                        <thead className="bg-slate-50 text-slate-700 border-b border-gray-200">
-                            <tr>
-                                {Th('day', 'Day', 'bg-slate-50', 'text-slate-600', true)}
-                                {Th('date', '日期')}
-                                {Th('route', '路线')}
-                                {Th('transport', '交通/车型')}
-                                {Th('hotel', '酒店/房型')}
-                                {Th('description', '详情')}
-                                {Th('ticket', '门票')}
-                                {Th('activity', '活动')}
-                                {Th('restaurant', '餐厅')}
-                                {Th('otherService', '其它服务')}
-                                {Th('transportCost', '交通费')}
-                                {Th('hotelCost', '酒店费')}
-                                {Th('ticketCost', '门票费')}
-                                {Th('activityCost', '活动费')}
-                                {Th('restaurantCost', '餐饮费')}
-                                {Th('otherCost', '其它费用')}
-                                <th className="w-10 sticky right-0 bg-gray-50 z-20"></th>
+        <div className="flex flex-col h-full bg-white/50 backdrop-blur-sm relative">
+            {/* Header / Toolbar */}
+            <div className="p-4 border-b border-gray-200/50 flex justify-between items-center bg-white/80 backdrop-blur-md sticky top-0 z-20">
+                <div className="flex items-center gap-3">
+                    <div className="p-2 bg-indigo-100 text-indigo-600 rounded-lg">
+                        <Calendar size={20} />
+                    </div>
+                    <div>
+                        <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                            行程规划表
+                            <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 text-xs rounded-full border border-indigo-100 font-normal">
+                                {totalDays} 天
+                            </span>
+                        </h2>
+                        <p className="text-xs text-gray-500">
+                            {settings.startDate ? new Date(settings.startDate).toLocaleDateString() : '未设置日期'}
+                        </p>
+                    </div>
+                </div>
+
+                <div className="flex items-center gap-6">
+                    {/* Margin Control (Admin Only) */}
+                    {!isMember && (
+                        <div className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-200">
+                            <span className="text-xs font-medium text-gray-500">利润率</span>
+                            <div className="relative flex items-center w-24">
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="60"
+                                    step="1"
+                                    disabled={isMember}
+                                    value={settings.marginPercent}
+                                    onChange={(e) => setSettings(prev => ({ ...prev, marginPercent: parseInt(e.target.value) || 0 }))}
+                                    className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                                />
+                            </div>
+                            <span className="text-xs font-bold text-blue-600 w-8 text-right font-mono">{settings.marginPercent}%</span>
+                        </div>
+                    )}
+
+                    {/* Total Cost Display */}
+                    <div className="flex items-center gap-3 pl-4 border-l border-gray-100">
+                        <div className="flex flex-col items-end">
+                            <span className="text-[10px] text-gray-400 font-medium uppercase tracking-wider">总报价 ({settings.currency})</span>
+                            <div className="flex items-baseline gap-1">
+                                <span className="text-2xl font-black bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent tracking-tight">
+                                    {isMember ? '****' : Math.round(totalCost * settings.exchangeRate / (1 - settings.marginPercent / 100)).toLocaleString()}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            {/* Table Content */}
+            <div className="flex-1 overflow-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-transparent p-4">
+                <div className="min-w-[1000px] pb-20"> {/* pb-20 for extra scroll space */}
+                    <table className="w-full border-separate border-spacing-y-3">
+                        <thead className="sticky top-0 z-10">
+                            <tr className="shadow-md rounded-lg overflow-hidden">
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider w-20 bg-gradient-to-r from-indigo-500 to-indigo-600 first:rounded-l-xl">天数</th>
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider w-32 bg-indigo-600">日期</th>
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider bg-indigo-600">路线</th>
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider bg-indigo-600">交通/车型</th>
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider bg-indigo-600">酒店/房型</th>
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider bg-indigo-600">详情</th>
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider bg-indigo-600">门票</th>
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider bg-indigo-600">活动</th>
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider bg-indigo-600">餐厅</th>
+                                <th className="px-4 py-4 text-left text-xs font-bold text-white uppercase tracking-wider bg-indigo-600">其它服务</th>
+                                <th className="px-4 py-4 text-right text-xs font-bold text-white uppercase tracking-wider w-28 bg-indigo-600">交通费</th>
+                                <th className="px-4 py-4 text-right text-xs font-bold text-white uppercase tracking-wider w-28 bg-indigo-600">酒店费</th>
+                                <th className="px-4 py-4 text-right text-xs font-bold text-white uppercase tracking-wider w-28 bg-indigo-600">门票费</th>
+                                <th className="px-4 py-4 text-right text-xs font-bold text-white uppercase tracking-wider w-28 bg-indigo-600">活动费</th>
+                                <th className="px-4 py-4 text-right text-xs font-bold text-white uppercase tracking-wider w-28 bg-indigo-600">餐饮费</th>
+                                <th className="px-4 py-4 text-right text-xs font-bold text-white uppercase tracking-wider w-28 bg-indigo-600">其它费用</th>
+                                <th className="px-4 py-4 text-center text-xs font-bold text-white uppercase tracking-wider w-16 bg-gradient-to-r from-indigo-600 to-purple-600 last:rounded-r-xl">操作</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-gray-100">
+                        <tbody className="space-y-4">
                             {rows.map((row, index) => {
                                 const destinationCityIds = getDestinationCityIds(row.route);
                                 const routeCities = extractCitiesFromRoute(row.route);
@@ -155,22 +217,24 @@ export const ItineraryTable: React.FC<ItineraryTableProps> = ({
                                 return (
                                     <tr
                                         key={row.id}
-                                        className={`group transition-all duration-200 border-b border-gray-100 last:border-0 hover:bg-blue-50/30`}
+                                        className={`
+                                            group relative transition-all duration-300 ease-out
+                                            hover:translate-z-0 hover:-translate-y-1 hover:shadow-lg
+                                            bg-white border border-gray-100 rounded-xl
+                                        `}
                                     >
-                                        <td className="p-2 sticky left-0 bg-white group-hover:bg-blue-50/40 transition-colors z-10 font-bold text-center text-slate-400 shadow-[4px_0_12px_rgba(0,0,0,0.02)]">
+                                        <td className="px-4 py-3 bg-white border-y border-l border-gray-100 rounded-l-xl group-hover:border-indigo-100 relative overflow-hidden">
+                                            <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-indigo-400 to-purple-400 opacity-0 group-hover:opacity-100 transition-opacity" />
                                             <div className="flex items-center gap-2">
-                                                {/* Drag handle hidden */}
-                                                <div className="text-gray-100">
-                                                    <GripVertical size={14} />
-                                                </div>
-                                                {row.dayIndex}
+                                                <div className="w-1.5 h-1.5 rounded-full bg-gray-200 mx-auto group-hover:bg-indigo-400 transition-colors" />
+                                                <span className="font-bold text-gray-700">{row.dayIndex}</span>
                                             </div>
                                         </td>
-                                        <td className="p-1.5"><input type="date" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-gray-700 text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none" value={row.date} onChange={(e) => { if (index === 0) setSettings(prev => ({ ...prev, startDate: e.target.value })); else updateRow(index, { date: e.target.value }); }} /></td>
-                                        <td className="p-1.5"><div className="flex items-center justify-between gap-1"><div className="flex-1"><Autocomplete value={row.route} onChange={(val) => handleRouteUpdate(index, val)} suggestions={allowedCityNames} placeholder="城市-城市" separator="-" /></div><button tabIndex={-1} onClick={() => handleQuickSave('route', index)} className="opacity-0 group-hover:opacity-100 text-blue-300 hover:text-blue-600 transition-opacity"><PlusCircle size={14} /></button></div></td>
+                                        <td className="p-1.5 bg-white border-y border-gray-100 group-hover:border-indigo-100"><input type="date" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-gray-700 text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none" value={row.date} onChange={(e) => { if (index === 0) setSettings(prev => ({ ...prev, startDate: e.target.value })); else updateRow(index, { date: e.target.value }); }} /></td>
+                                        <td className="p-1.5 bg-white border-y border-gray-100 group-hover:border-indigo-100"><div className="flex items-center justify-between gap-1"><div className="flex-1"><Autocomplete value={row.route} onChange={(val) => handleRouteUpdate(index, val)} suggestions={allowedCityNames} placeholder="城市-城市" separator="-" /></div><button tabIndex={-1} onClick={() => handleQuickSave('route', index)} className="opacity-0 group-hover:opacity-100 text-blue-300 hover:text-blue-600 transition-opacity"><PlusCircle size={14} /></button></div></td>
 
                                         {/* Transport Column */}
-                                        <td className="p-1.5">
+                                        <td className="p-1.5 bg-white border-y border-gray-100 group-hover:border-indigo-100">
                                             <MultiSelect options={Object.values(TransportType)} value={row.transport} onChange={(v) => updateRow(index, { transport: v })} className="w-full mb-1" />
                                             <div className="space-y-1">
                                                 {row.transportDetails.map(item => (
@@ -193,7 +257,7 @@ export const ItineraryTable: React.FC<ItineraryTableProps> = ({
                                         </td>
 
                                         {/* Hotel Column */}
-                                        <td className="p-1.5 relative group/cell">
+                                        <td className="p-1.5 relative group/cell bg-white border-y border-gray-100 group-hover:border-indigo-100">
                                             <div className="space-y-1">
                                                 {row.hotelDetails.map(item => (
                                                     <div key={item.id} className="flex flex-col gap-0.5 bg-gray-50 p-1 rounded border border-gray-200 text-xs">
@@ -216,7 +280,7 @@ export const ItineraryTable: React.FC<ItineraryTableProps> = ({
                                             <button tabIndex={-1} onClick={() => handleQuickSave('hotel', index)} className="absolute right-1 top-2 opacity-0 group-hover/cell:opacity-100 text-blue-300 hover:text-blue-600"><PlusCircle size={14} /></button>
                                         </td>
 
-                                        <td className="p-1.5"><textarea className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none resize-y min-h-[3.5rem] text-gray-600 leading-relaxed" rows={3} value={row.description} onChange={(e) => updateRow(index, { description: e.target.value })} /></td>
+                                        <td className="p-1.5 bg-white border-y border-gray-100 group-hover:border-indigo-100"><textarea className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none resize-y min-h-[3.5rem] text-gray-600 leading-relaxed" rows={3} value={row.description} onChange={(e) => updateRow(index, { description: e.target.value })} /></td>
 
                                         {/* Ticket Column */}
                                         <td className="p-1.5 relative group/cell">
@@ -280,40 +344,34 @@ export const ItineraryTable: React.FC<ItineraryTableProps> = ({
                                             </div>
                                         </td>
 
-                                        <td className="p-1.5 text-right align-top">{shouldMaskPrice(row.transportDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.transportCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.transportCost} onChange={(e) => updateRow(index, { transportCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, transport: true } })} />}</td>
-                                        <td className="p-1.5 text-right align-top">{shouldMaskPrice(row.hotelDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.hotelCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.hotelCost} onChange={(e) => updateRow(index, { hotelCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, hotel: true } })} />}</td>
-                                        <td className="p-1.5 text-right align-top">{shouldMaskPrice(row.ticketDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.ticketCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.ticketCost} onChange={(e) => updateRow(index, { ticketCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, ticket: true } })} />}</td>
-                                        <td className="p-1.5 text-right align-top">{shouldMaskPrice(row.activityDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.activityCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.activityCost} onChange={(e) => updateRow(index, { activityCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, activity: true } })} />}</td>
-                                        <td className="p-1.5 text-right align-top">{shouldMaskPrice((row.restaurantDetails || []).some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.restaurantCost || 0, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.restaurantCost || 0} onChange={(e) => updateRow(index, { restaurantCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, restaurant: true } })} />}</td>
-                                        <td className="p-1.5 text-right align-top">{shouldMaskPrice(row.otherDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.otherCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.otherCost} onChange={(e) => updateRow(index, { otherCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, other: true } })} />}</td>
+                                        <td className="p-1.5 text-right align-middle">{shouldMaskPrice(row.transportDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.transportCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.transportCost} onChange={(e) => updateRow(index, { transportCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, transport: true } })} />}</td>
+                                        <td className="p-1.5 text-right align-middle">{shouldMaskPrice(row.hotelDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.hotelCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.hotelCost} onChange={(e) => updateRow(index, { hotelCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, hotel: true } })} />}</td>
+                                        <td className="p-1.5 text-right align-middle">{shouldMaskPrice(row.ticketDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.ticketCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.ticketCost} onChange={(e) => updateRow(index, { ticketCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, ticket: true } })} />}</td>
+                                        <td className="p-1.5 text-right align-middle">{shouldMaskPrice(row.activityDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.activityCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.activityCost} onChange={(e) => updateRow(index, { activityCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, activity: true } })} />}</td>
+                                        <td className="p-1.5 text-right align-middle">{shouldMaskPrice((row.restaurantDetails || []).some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.restaurantCost || 0, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.restaurantCost || 0} onChange={(e) => updateRow(index, { restaurantCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, restaurant: true } })} />}</td>
+                                        <td className="p-1.5 text-right align-middle">{shouldMaskPrice(row.otherDetails.some(i => i.sourcePublic)) ? <span className="text-gray-400 font-mono text-sm px-1 py-1 block">{maskNumber(row.otherCost, true)}</span> : <input type="number" className="w-full bg-transparent border border-transparent hover:border-gray-200 focus:bg-white focus:border-blue-400 rounded px-1 py-1 text-right text-sm focus:ring-2 focus:ring-blue-100 transition-all outline-none text-gray-600 font-medium" value={row.otherCost} onChange={(e) => updateRow(index, { otherCost: parseFloat(e.target.value) || 0, manualCostFlags: { ...row.manualCostFlags, other: true } })} />}</td>
 
-                                        <td className="p-1.5 text-center sticky right-0 bg-white group-hover:bg-blue-50/30 z-10 align-top"><button onClick={() => handleDeleteRow(index)} className="text-gray-300 hover:text-red-500"><Trash2 size={14} /></button></td>
+                                        <td className="p-1.5 text-center sticky right-0 bg-white group-hover:bg-blue-50/30 z-10 align-middle"><button onClick={() => handleDeleteRow(index)} className="text-gray-300 hover:text-red-500"><Trash2 size={14} /></button></td>
                                     </tr>
                                 );
                             })}
                         </tbody>
-                        <tfoot className="bg-slate-50 border-t-2 border-slate-100 font-bold text-slate-700 shadow-[0_-4px_12px_rgba(0,0,0,0.02)] relative z-20">
-                            <tr>
-                                <td colSpan={9} className="p-4 text-right text-gray-600 font-medium">总计成本 ({settings.currency}):</td>
-                                <td colSpan={5} className="p-3 text-right text-blue-600">{isMember ? '****' : totalCost.toLocaleString()}</td>
-                                <td></td>
-                            </tr>
-                            <tr>
-                                <td colSpan={9} className="p-3"><div className="flex items-center justify-end gap-4 h-full"><button onClick={() => setIsChatOpen(true)} className="flex items-center gap-1 text-purple-600 bg-purple-50 hover:bg-purple-100 px-3 py-1 rounded-full border border-purple-200 text-xs font-bold transition-colors mr-2"><Wand2 size={14} /> AI 优化</button>{!isMember && (<div className="flex items-center gap-2 bg-blue-50 px-3 py-1 rounded-full border border-blue-100"><span className="text-xs font-medium text-blue-800">利润率</span><input type="range" min="0" max="60" step="1" value={settings.marginPercent} onChange={(e) => setSettings(prev => ({ ...prev, marginPercent: parseInt(e.target.value) || 0 }))} className="w-24 h-1.5 bg-blue-200 rounded-lg appearance-none cursor-pointer accent-blue-600" /><span className="text-xs font-bold text-blue-800 w-8 text-right">{settings.marginPercent}%</span></div>)}<span className="font-bold text-gray-700">总报价:</span></div></td>
-                                <td colSpan={6} className="p-4 text-left"><span className="text-2xl text-green-600 font-black tracking-tight">{Math.round(totalCost * settings.exchangeRate / (1 - settings.marginPercent / 100)).toLocaleString()}</span></td>
-                            </tr>
+                        <tfoot className="bg-slate-50 border-t-2 border-slate-100 relative z-20 hidden">
+                            {/* Footer Removed */}
                         </tfoot>
                     </table>
                 </div>
             </div>
-            <div className="p-4 bg-gray-50 border-t flex gap-4">
-                <button onClick={() => setRows([...rows, createEmptyRow(rows.length + 1)])} className="flex-1 text-sm text-gray-500 flex items-center justify-center gap-2 hover:bg-white hover:text-blue-600 hover:border-blue-300 border border-dashed border-gray-300 py-3 rounded-lg transition-all shadow-sm group font-medium bg-white/50">
-                    <Plus size={16} className="text-gray-400 group-hover:text-blue-500 transition-colors" /> 添加一天
+            {/* Floating Action Button for Add Day */}
+            <div className="absolute bottom-8 left-8 z-30">
+                <button
+                    onClick={() => setRows([...rows, createEmptyRow(rows.length + 1)])}
+                    className="flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-full shadow-lg shadow-blue-200 hover:shadow-blue-300 transform hover:-translate-y-1 hover:scale-105 transition-all font-medium"
+                >
+                    <Plus size={20} />
+                    <span>添加一天</span>
                 </button>
-                <button onClick={handleRefreshCosts} className="flex-1 text-sm text-gray-500 flex items-center justify-center gap-2 hover:bg-white hover:text-green-600 hover:border-green-300 border border-dashed border-gray-300 py-3 rounded-lg transition-all shadow-sm group font-medium bg-white/50">
-                    <RefreshCw size={16} className="text-gray-400 group-hover:text-green-500 transition-colors" /> 刷新价格
-                </button>
-            </div>
-        </React.Fragment>
+            </div >
+        </div >
     );
 };
