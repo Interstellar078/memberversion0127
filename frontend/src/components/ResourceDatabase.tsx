@@ -391,7 +391,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
 
     const handleDocUploadChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const ctx = docUploadContext;
-        const files = Array.from(event.target.files ?? []);
+        const files: File[] = event.target.files ? Array.from(event.target.files) : [];
         if (!ctx || files.length === 0) return;
         const note = window.prompt('备注(可选):')?.trim() || '';
         const uploaded: ResourceDocument[] = [];
