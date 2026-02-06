@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Plus, Trash2, Calendar, Save, CheckCircle, Library, Search, X, RefreshCw, LayoutGrid, Table as TableIcon, FileSpreadsheet, ChevronDown, Rocket } from 'lucide-react';
+import { Plus, Trash2, Calendar, Save, CheckCircle, Library, Search, X, RefreshCw, LayoutGrid, Table as TableIcon, FileSpreadsheet, ChevronDown, Rocket, AlertTriangle } from 'lucide-react';
 import JSZip from 'jszip';
 import * as XLSX from 'xlsx';
 import { DayRow, TripSettings, TransportType, CustomColumn, SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiRestaurant, PoiOther, User, CountryFile, TransportItem, HotelItem, GeneralItem } from './types';
@@ -35,6 +35,14 @@ type LocalDraft = {
     customColumns: CustomColumn[];
     activeTripId: string | null;
     viewMode: 'table' | 'card';
+};
+
+type ConfirmDialogState = {
+    isOpen: boolean;
+    title: string;
+    message: string;
+    action: 'clear_chat' | 'clear_table' | null;
+    busy: boolean;
 };
 
 const createWelcomeMessage = (): ChatMessage => ({
@@ -241,6 +249,13 @@ export default function App() {
     const [isChatHydrated, setIsChatHydrated] = useState(false);
     const chatLoadedScopeRef = useRef<string>('');
     const chatSaveTimerRef = useRef<number | null>(null);
+    const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState>({
+        isOpen: false,
+        title: '',
+        message: '',
+        action: null,
+        busy: false,
+    });
     const [isDraftHydrated, setIsDraftHydrated] = useState(false);
     const draftLoadedScopeRef = useRef<string>('');
     const draftSaveTimerRef = useRef<number | null>(null);
@@ -1151,8 +1166,7 @@ export default function App() {
         }
     };
 
-    const handleClearTable = () => {
-        if (!window.confirm("确定清空当前表格数据吗？此操作会清除当前天数行程明细。")) return;
+    const executeClearTable = () => {
         setActiveTripId(null);
         setRows(buildInitialRows());
         setCustomColumns([]);
@@ -1163,8 +1177,7 @@ export default function App() {
         setTimeout(() => setNotification({ show: false, message: '' }), 2500);
     };
 
-    const handleClearChat = async () => {
-        if (!window.confirm("确定清理聊天记录吗？")) return;
+    const executeClearChat = async () => {
         const username = currentUser?.username ?? null;
         setChatMessages([createWelcomeMessage()]);
         clearLocalChat(conversationId, username);
@@ -1177,6 +1190,65 @@ export default function App() {
         setNotification({ show: true, message: '聊天记录已清理' });
         setTimeout(() => setNotification({ show: false, message: '' }), 2500);
     };
+
+    const openConfirmDialog = (action: 'clear_chat' | 'clear_table') => {
+        if (action === 'clear_chat') {
+            setConfirmDialog({
+                isOpen: true,
+                title: '清理聊天记录',
+                message: '将清除当前会话聊天内容。此操作不可撤销。',
+                action,
+                busy: false,
+            });
+            return;
+        }
+        setConfirmDialog({
+            isOpen: true,
+            title: '清空表格',
+            message: '将清除当前表格行程明细。此操作不可撤销。',
+            action,
+            busy: false,
+        });
+    };
+
+    const closeConfirmDialog = () => {
+        if (confirmDialog.busy) return;
+        setConfirmDialog({
+            isOpen: false,
+            title: '',
+            message: '',
+            action: null,
+            busy: false,
+        });
+    };
+
+    const handleConfirmDialogAction = async () => {
+        if (!confirmDialog.action || confirmDialog.busy) return;
+        const action = confirmDialog.action;
+        setConfirmDialog(prev => ({ ...prev, busy: true }));
+        try {
+            if (action === 'clear_chat') {
+                await executeClearChat();
+            } else if (action === 'clear_table') {
+                executeClearTable();
+            }
+            setConfirmDialog({
+                isOpen: false,
+                title: '',
+                message: '',
+                action: null,
+                busy: false,
+            });
+        } catch (e) {
+            console.error('Confirm action failed', e);
+            setConfirmDialog(prev => ({ ...prev, busy: false }));
+            setNotification({ show: true, message: '操作失败，请重试' });
+            setTimeout(() => setNotification({ show: false, message: '' }), 2500);
+        }
+    };
+
+    const handleClearTable = () => openConfirmDialog('clear_table');
+    const handleClearChat = () => openConfirmDialog('clear_chat');
 
     const handleExport = () => {
         const wb = XLSX.utils.book_new();
@@ -1631,6 +1703,41 @@ ${msg}
                     </button>
                 )}
             </div>
+
+            {confirmDialog.isOpen && (
+                <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/45 backdrop-blur-sm">
+                    <div className="w-full max-w-md rounded-2xl border border-white/60 bg-white shadow-2xl overflow-hidden">
+                        <div className="px-6 py-5 border-b border-gray-100 flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-full bg-orange-50 text-orange-600 flex items-center justify-center">
+                                <AlertTriangle size={18} />
+                            </div>
+                            <div>
+                                <h3 className="text-base font-bold text-gray-900">{confirmDialog.title}</h3>
+                                <p className="text-xs text-gray-500">请确认后继续操作</p>
+                            </div>
+                        </div>
+                        <div className="px-6 py-4 text-sm text-gray-700 leading-relaxed">
+                            {confirmDialog.message}
+                        </div>
+                        <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-2">
+                            <button
+                                onClick={closeConfirmDialog}
+                                disabled={confirmDialog.busy}
+                                className="px-4 py-2 rounded-lg text-gray-600 hover:bg-gray-200 disabled:opacity-60"
+                            >
+                                取消
+                            </button>
+                            <button
+                                onClick={handleConfirmDialogAction}
+                                disabled={confirmDialog.busy}
+                                className="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-70"
+                            >
+                                {confirmDialog.busy ? '处理中...' : '确认清理'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {showAuthModal && <AuthModal onLoginSuccess={async (u) => { setCurrentUser(u); setShowAuthModal(false); setIsAppLoading(true); await loadCloudData(u); setIsAppLoading(false); setNotification({ show: true, message: `欢迎回来, ${u.username} ` }); setTimeout(() => setNotification({ show: false, message: '' }), 3000); }} onClose={() => setShowAuthModal(false)} />}
             {showAdminDashboard && currentUser && <AdminDashboard currentUser={currentUser} onClose={() => setShowAdminDashboard(false)} />}
