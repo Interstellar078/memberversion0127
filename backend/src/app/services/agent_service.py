@@ -320,13 +320,6 @@ class AIAgentService:
         people = getattr(req, 'peopleCount', None) or 1
         rooms = getattr(req, 'roomCount', None) or 1
 
-        def normalize_name(name: str) -> str:
-            if not name:
-                return ''
-            name = re.sub(r'[\(（\[【].*?[\)）\]】]', '', name)
-            name = re.sub(r'[^0-9a-zA-Z一-鿿]+', '', name).lower()
-            return name
-
         def price_or_none(value):
             if value is None:
                 return None
@@ -338,21 +331,47 @@ class AIAgentService:
                 return None
             return val
 
-        hotel_ids = {str(item.get('hotelId')) for item in itinerary if item.get('hotelId')}
-        ticket_ids = {str(tid) for item in itinerary for tid in (item.get('ticketIds') or []) if tid}
-        activity_ids = {str(aid) for item in itinerary for aid in (item.get('activityIds') or []) if aid}
-        transport_ids = {str(tid) for item in itinerary for tid in (item.get('transportIds') or []) if tid}
+        def ensure_list(value: Any) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [v.strip() for v in re.split(r"[,，、]", value) if v.strip()]
+            if isinstance(value, list):
+                return [str(v).strip() for v in value if str(v).strip()]
+            return []
 
-        def fetch_id_map(model, ids, price_field: str):
+        hotel_ids = {str(item.get('hotelId')) for item in itinerary if item.get('hotelId')}
+        ticket_ids = {str(tid) for item in itinerary for tid in ensure_list(item.get('ticketIds')) if tid}
+        activity_ids = {str(aid) for item in itinerary for aid in ensure_list(item.get('activityIds')) if aid}
+        transport_ids = {str(tid) for item in itinerary for tid in ensure_list(item.get('transportIds')) if tid}
+
+        def fetch_rows_map(model, ids: set[str]) -> dict[str, Any]:
             if not ids:
                 return {}
             rows = self.db.execute(select(model).where(model.id.in_(list(ids)))).scalars().all()
-            return {str(r.id): price_or_none(getattr(r, price_field)) for r in rows}
+            return {str(r.id): r for r in rows}
 
-        hotel_id_map = fetch_id_map(ResourceHotel, hotel_ids, 'price')
-        spot_id_map = fetch_id_map(ResourceSpot, ticket_ids, 'price')
-        act_id_map = fetch_id_map(ResourceActivity, activity_ids, 'price')
-        transport_id_map = fetch_id_map(ResourceTransport, transport_ids, 'price_low')
+        hotel_rows = fetch_rows_map(ResourceHotel, hotel_ids)
+        spot_rows = fetch_rows_map(ResourceSpot, ticket_ids)
+        activity_rows = fetch_rows_map(ResourceActivity, activity_ids)
+        transport_rows = fetch_rows_map(ResourceTransport, transport_ids)
+
+        hotel_price_map = {rid: price_or_none(row.price) for rid, row in hotel_rows.items()}
+        spot_price_map = {rid: price_or_none(row.price) for rid, row in spot_rows.items()}
+        activity_price_map = {rid: price_or_none(row.price) for rid, row in activity_rows.items()}
+        transport_price_map = {rid: price_or_none(row.price_low) for rid, row in transport_rows.items()}
+
+        city_name_cache: dict[str, str | None] = {}
+
+        def resolve_city_name(city_id: str | None) -> str | None:
+            if not city_id:
+                return None
+            cid = str(city_id)
+            if cid in city_name_cache:
+                return city_name_cache[cid]
+            name = self.db.execute(select(ResourceCity.name).where(ResourceCity.id == cid)).scalar_one_or_none()
+            city_name_cache[cid] = str(name) if name else None
+            return city_name_cache[cid]
 
         def find_by_name(model, name_field: str, price_field: str, name: str):
             if not name:
@@ -383,27 +402,42 @@ class AIAgentService:
             return self.db.execute(stmt).scalars().first()
 
         for item in itinerary:
+            city_candidates: list[str] = []
+
             # hotel
+            hotel_id = str(item.get('hotelId')) if item.get('hotelId') else None
+            hotel_row = hotel_rows.get(hotel_id) if hotel_id else None
+            if hotel_row:
+                city_candidates.append(str(hotel_row.city_id))
+                if not item.get('hotelName'):
+                    item['hotelName'] = hotel_row.name
             if item.get('hotelCost') in (None, 0):
-                hotel_id = item.get('hotelId')
-                price = hotel_id_map.get(str(hotel_id)) if hotel_id else None
+                price = hotel_price_map.get(hotel_id) if hotel_id else None
                 if price is None and item.get('hotelName'):
                     row = find_by_name(ResourceHotel, 'name', 'price', item.get('hotelName'))
                     if row:
-                        item['hotelId'] = str(row.id)
-                        price = price_or_none(row.price)
+                        rid = str(row.id)
+                        hotel_rows[rid] = row
+                        hotel_price_map[rid] = price_or_none(row.price)
+                        item['hotelId'] = rid
+                        item['hotelName'] = row.name
+                        price = hotel_price_map.get(rid)
+                        city_candidates.append(str(row.city_id))
                 if price is not None:
                     item['hotelCost'] = price * rooms
 
             # tickets
             if item.get('ticketCost') in (None, 0):
                 total = 0
-                ids = [str(tid) for tid in (item.get('ticketIds') or []) if tid]
+                ids = [str(tid) for tid in ensure_list(item.get('ticketIds')) if tid]
+                names = ensure_list(item.get('ticketName'))
                 for tid in ids:
-                    p = spot_id_map.get(tid)
+                    row = spot_rows.get(tid)
+                    if row:
+                        city_candidates.append(str(row.city_id))
+                    p = spot_price_map.get(tid)
                     if p is not None:
                         total += p
-                names = item.get('ticketName') or []
                 if names:
                     for name in names:
                         row = find_by_name(ResourceSpot, 'name', 'price', name)
@@ -411,23 +445,33 @@ class AIAgentService:
                             rid = str(row.id)
                             if rid not in ids:
                                 ids.append(rid)
-                            p = price_or_none(row.price)
+                            spot_rows[rid] = row
+                            spot_price_map[rid] = price_or_none(row.price)
+                            city_candidates.append(str(row.city_id))
+                            p = spot_price_map.get(rid)
                             if p is not None:
                                 total += p
+                if not names and ids:
+                    names = [spot_rows[tid].name for tid in ids if tid in spot_rows]
                 if ids:
                     item['ticketIds'] = ids
+                if names:
+                    item['ticketName'] = names
                 if total > 0:
                     item['ticketCost'] = total * people
 
             # activities
             if item.get('activityCost') in (None, 0):
                 total = 0
-                ids = [str(aid) for aid in (item.get('activityIds') or []) if aid]
+                ids = [str(aid) for aid in ensure_list(item.get('activityIds')) if aid]
+                names = ensure_list(item.get('activityName'))
                 for aid in ids:
-                    p = act_id_map.get(aid)
+                    row = activity_rows.get(aid)
+                    if row:
+                        city_candidates.append(str(row.city_id))
+                    p = activity_price_map.get(aid)
                     if p is not None:
                         total += p
-                names = item.get('activityName') or []
                 if names:
                     for name in names:
                         row = find_by_name(ResourceActivity, 'name', 'price', name)
@@ -435,23 +479,30 @@ class AIAgentService:
                             rid = str(row.id)
                             if rid not in ids:
                                 ids.append(rid)
-                            p = price_or_none(row.price)
+                            activity_rows[rid] = row
+                            activity_price_map[rid] = price_or_none(row.price)
+                            city_candidates.append(str(row.city_id))
+                            p = activity_price_map.get(rid)
                             if p is not None:
                                 total += p
+                if not names and ids:
+                    names = [activity_rows[aid].name for aid in ids if aid in activity_rows]
                 if ids:
                     item['activityIds'] = ids
+                if names:
+                    item['activityName'] = names
                 if total > 0:
                     item['activityCost'] = total * people
 
             # transport
             if item.get('transportCost') in (None, 0):
                 total = 0
-                ids = [str(tid) for tid in (item.get('transportIds') or []) if tid]
+                ids = [str(tid) for tid in ensure_list(item.get('transportIds')) if tid]
                 for tid in ids:
-                    p = transport_id_map.get(tid)
+                    p = transport_price_map.get(tid)
                     if p is not None:
                         total += p
-                names = item.get('transport') or []
+                names = ensure_list(item.get('transport'))
                 if names:
                     for name in names:
                         row = find_transport_by_name(name)
@@ -459,13 +510,55 @@ class AIAgentService:
                             rid = str(row.id)
                             if rid not in ids:
                                 ids.append(rid)
-                            p = price_or_none(row.price_low)
+                            transport_rows[rid] = row
+                            transport_price_map[rid] = price_or_none(row.price_low)
+                            p = transport_price_map.get(rid)
                             if p is not None:
                                 total += p
                 if ids:
                     item['transportIds'] = ids
                 if total > 0:
                     item['transportCost'] = total
+
+            # route/city backfill from resolved resource city ids
+            unique_city_ids = []
+            seen_city_ids = set()
+            for cid in city_candidates:
+                if not cid or cid in seen_city_ids:
+                    continue
+                seen_city_ids.add(cid)
+                unique_city_ids.append(cid)
+            city_names = [name for name in (resolve_city_name(cid) for cid in unique_city_ids) if name]
+            if city_names:
+                primary = city_names[0]
+                if not item.get('s_city'):
+                    item['s_city'] = primary
+                if not item.get('e_city'):
+                    item['e_city'] = primary
+            elif (not item.get('s_city') or not item.get('e_city')) and (getattr(req, 'currentDestinations', None) or []):
+                fallback_city = str((req.currentDestinations or [])[0]).split('(')[0].strip()
+                if fallback_city:
+                    if not item.get('s_city'):
+                        item['s_city'] = fallback_city
+                    if not item.get('e_city'):
+                        item['e_city'] = fallback_city
+            if not item.get('route') and item.get('s_city') and item.get('e_city'):
+                item['route'] = f"{item.get('s_city')}-{item.get('e_city')}"
+
+            # description fallback
+            desc = item.get('description')
+            if not isinstance(desc, str) or not desc.strip():
+                snippets: list[str] = []
+                if item.get('hotelName'):
+                    snippets.append(f"入住{item.get('hotelName')}")
+                ticket_names = ensure_list(item.get('ticketName'))
+                if ticket_names:
+                    snippets.append("游览" + "、".join(ticket_names[:3]))
+                activity_names = ensure_list(item.get('activityName'))
+                if activity_names:
+                    snippets.append("体验" + "、".join(activity_names[:3]))
+                if snippets:
+                    item['description'] = "；".join(snippets)
         return itinerary
 
     def _safe_rollback(self) -> None:
@@ -535,18 +628,134 @@ class AIAgentService:
             pass
         return existing
 
+    def _to_safe_int(self, value: Any, default: int) -> int:
+        if isinstance(value, str):
+            match = re.search(r"\d+", value)
+            if match:
+                try:
+                    num = int(match.group())
+                    return num if num > 0 else default
+                except Exception:
+                    pass
+        try:
+            num = int(float(value))
+            return num if num > 0 else default
+        except Exception:
+            return default
+
+    def _to_safe_number_or_none(self, value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except Exception:
+            return None
+
+    def _to_string_list(self, value: Any, prefer: str = "name") -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [v.strip() for v in re.split(r"[,，、]", value) if v.strip()]
+
+        values = value if isinstance(value, list) else [value]
+        out: list[str] = []
+        for item in values:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                s = item.strip()
+                if s:
+                    out.append(s)
+                continue
+            if isinstance(item, (int, float)):
+                out.append(str(item))
+                continue
+            if isinstance(item, dict):
+                candidate = None
+                if prefer == "id":
+                    candidate = item.get("id") or item.get("name")
+                else:
+                    candidate = item.get("name") or item.get("id")
+                if isinstance(candidate, str):
+                    s = candidate.strip()
+                    if s:
+                        out.append(s)
+                continue
+        return out
+
+    def _pick_value(self, payload: dict, keys: list[str], default: Any = None) -> Any:
+        for key in keys:
+            if key in payload and payload.get(key) is not None:
+                return payload.get(key)
+        return default
+
+    def _validate_items_with_recovery(self, items: list[dict]) -> tuple[list[dict], list[dict]]:
+        adapter = TypeAdapter(ItineraryItem)
+        valid: list[dict] = []
+        errors: list[dict] = []
+        for idx, item in enumerate(items, start=1):
+            try:
+                validated = adapter.validate_python(item)
+                valid.append(validated.model_dump())
+            except ValidationError as exc:
+                errors.append(
+                    {
+                        "day_index": idx,
+                        "errors": exc.errors()[:3],
+                        "item_preview": {
+                            "day": item.get("day"),
+                            "route": item.get("route"),
+                            "s_city": item.get("s_city"),
+                            "e_city": item.get("e_city"),
+                        },
+                    }
+                )
+        return valid, errors
+
     def _normalize_itinerary(self, items: list[dict]) -> list[dict]:
         normalized: list[dict] = []
         prev_end = None
+        aliases: dict[str, list[str]] = {
+            "day": ["day", "Day", "d", "第几天", "天数", "天"],
+            "date": ["date", "Date", "日期"],
+            "route": ["route", "Route", "线路", "路线", "行程", "行程路线", "destination", "city"],
+            "s_city": ["s_city", "sCity", "start_city", "startCity", "fromCity", "出发城市", "起点"],
+            "e_city": ["e_city", "eCity", "end_city", "endCity", "toCity", "到达城市", "终点"],
+            "transport": ["transport", "transports", "traffic", "交通", "交通方式"],
+            "transportIds": ["transportIds", "transport_ids", "transport_ids_list", "交通ID", "交通ids"],
+            "hotelName": ["hotelName", "hotel_name", "hotel", "住宿", "酒店", "酒店名称"],
+            "hotelId": ["hotelId", "hotel_id", "酒店ID", "酒店id"],
+            "ticketName": ["ticketName", "ticket_name", "ticket", "tickets", "spots", "门票", "景点", "景点门票"],
+            "ticketIds": ["ticketIds", "ticket_ids", "spotIds", "spot_ids", "门票ID", "景点ID"],
+            "activityName": ["activityName", "activity_name", "activity", "activities", "活动", "体验"],
+            "activityIds": ["activityIds", "activity_ids", "活动ID"],
+            "description": ["description", "desc", "detail", "details", "备注", "详情", "行程描述"],
+            "hotelCost": ["hotelCost", "hotel_cost", "酒店费", "住宿费"],
+            "ticketCost": ["ticketCost", "ticket_cost", "门票费"],
+            "activityCost": ["activityCost", "activity_cost", "活动费"],
+            "transportCost": ["transportCost", "transport_cost", "交通费"],
+            "otherCost": ["otherCost", "other_cost", "其它费用", "其他费用"],
+        }
         for idx, item in enumerate(items, start=1):
             if not isinstance(item, dict):
                 continue
             out = dict(item)
-            day = out.get('day') or idx
-            out['day'] = day
-            route = out.get('route')
-            s_city = out.get('s_city') or out.get('sCity')
-            e_city = out.get('e_city') or out.get('eCity')
+
+            # Normalize likely key variants from LLM outputs (snake/camel/Chinese labels).
+            canonical: dict[str, Any] = {}
+            for target, keys in aliases.items():
+                value = self._pick_value(out, keys, None)
+                if value is not None:
+                    canonical[target] = value
+            out = {**out, **canonical}
+
+            out['day'] = self._to_safe_int(out.get('day'), idx)
+            route_raw = out.get('route')
+            route = route_raw.strip() if isinstance(route_raw, str) else None
+            s_raw = out.get('s_city') or out.get('sCity')
+            e_raw = out.get('e_city') or out.get('eCity')
+            s_city = s_raw.strip() if isinstance(s_raw, str) else None
+            e_city = e_raw.strip() if isinstance(e_raw, str) else None
             if route and not (s_city and e_city):
                 parts = re.split(r"[-—>，,]", route)
                 parts = [p.strip() for p in parts if p.strip()]
@@ -571,14 +780,30 @@ class AIAgentService:
             prev_end = e_city or s_city or prev_end
 
             # normalize list fields
-            for key in ['ticketName', 'activityName']:
-                val = out.get(key)
-                if isinstance(val, str):
-                    out[key] = [v.strip() for v in re.split(r"[,，、]", val) if v.strip()]
-                elif val is None:
-                    out[key] = []
-            if out.get('transport') is None:
-                out['transport'] = []
+            out['transport'] = self._to_string_list(out.get('transport'), prefer='name')
+            out['ticketName'] = self._to_string_list(out.get('ticketName'), prefer='name')
+            out['activityName'] = self._to_string_list(out.get('activityName'), prefer='name')
+            out['transportIds'] = self._to_string_list(out.get('transportIds'), prefer='id')
+            out['ticketIds'] = self._to_string_list(out.get('ticketIds'), prefer='id')
+            out['activityIds'] = self._to_string_list(out.get('activityIds'), prefer='id')
+
+            hotel_name_raw = out.get('hotelName')
+            hotel_id_raw = out.get('hotelId')
+            if isinstance(hotel_name_raw, dict):
+                out['hotelName'] = hotel_name_raw.get('name') or hotel_name_raw.get('title')
+                if not out.get('hotelId'):
+                    out['hotelId'] = hotel_name_raw.get('id')
+            elif isinstance(hotel_name_raw, str):
+                out['hotelName'] = hotel_name_raw.strip() or None
+            else:
+                out['hotelName'] = None
+            if isinstance(hotel_id_raw, str):
+                out['hotelId'] = hotel_id_raw.strip() or None
+
+            # normalize numeric fields
+            for key in ['hotelCost', 'ticketCost', 'activityCost', 'transportCost', 'otherCost']:
+                out[key] = self._to_safe_number_or_none(out.get(key))
+
             normalized.append(out)
         return normalized
 
@@ -1008,6 +1233,7 @@ class AIAgentService:
         def validate_plan(state: AgentState) -> AgentState:
             if state.get("error"):
                 return state
+            normalized: list[dict] = []
             try:
                 normalized = self._normalize_itinerary(state.get("itinerary", []))
                 normalized = self._backfill_prices(normalized, req)
@@ -1015,8 +1241,21 @@ class AIAgentService:
                 validated = adapter.validate_python(normalized)
                 logger.info("AI validate: days=%s", len(validated))
                 return {**state, "itinerary": [item.model_dump() for item in validated]}
-            except ValidationError:
-                return {**state, "error": "Validation failed", "itinerary": []}
+            except ValidationError as exc:
+                recovered, item_errors = self._validate_items_with_recovery(normalized or [])
+                logger.warning(
+                    "AI itinerary validation failed: total=%s recovered=%s errors=%s top=%s",
+                    len(normalized or []),
+                    len(recovered),
+                    len(item_errors),
+                    exc.errors()[:3],
+                )
+                if item_errors:
+                    logger.warning("AI itinerary invalid item examples: %s", item_errors[:3])
+                if recovered:
+                    logger.info("AI itinerary partial recovery succeeded: days=%s", len(recovered))
+                    return {**state, "itinerary": recovered, "error": None}
+                return {**state, "error": "行程格式校验失败，请重试", "itinerary": []}
 
         graph = StateGraph(AgentState)
         graph.add_node("assess_requirements", assess_requirements)

@@ -11,6 +11,7 @@ export interface ChatMessage {
 interface AIChatSidebarProps {
     messages: ChatMessage[];
     onSendMessage: (text: string) => void;
+    onClearMessages?: () => void;
     isGenerating: boolean;
     isOpen: boolean;
     onToggle: () => void;
@@ -23,6 +24,7 @@ interface AIChatSidebarProps {
 export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
     messages,
     onSendMessage,
+    onClearMessages,
     isGenerating,
     isOpen,
     onToggle,
@@ -129,6 +131,15 @@ export const AIChatSidebar: React.FC<AIChatSidebarProps> = ({
                     </div>
                 </div>
                 <div className="flex items-center gap-1">
+                    {onClearMessages && (
+                        <button
+                            onClick={onClearMessages}
+                            className="p-1.5 text-gray-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
+                            title="清理聊天记录"
+                        >
+                            <RefreshCw size={16} />
+                        </button>
+                    )}
 
                     <button
                         onClick={onToggle}

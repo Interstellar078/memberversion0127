@@ -1,11 +1,12 @@
 
 import React from 'react';
-import { Rocket, FileUp, FolderOpen, Loader2, Save, FileSpreadsheet, Database, Sparkles, CheckCircle, Cloud, ShieldAlert, LogOut } from 'lucide-react';
+import { Rocket, FileUp, FolderOpen, Loader2, Save, FileSpreadsheet, Database, Sparkles, CheckCircle, Cloud, ShieldAlert, LogOut, Eraser } from 'lucide-react';
 import { User, TripSettings } from '../types';
 import { AuthService } from '../services/authService';
 
 interface AppHeaderProps {
     handleNewTrip: () => void;
+    handleClearTable: () => void;
     handleOpenSavedList: () => void;
     isRefreshingTrips: boolean;
     handleOpenSaveModal: () => void;
@@ -25,6 +26,7 @@ interface AppHeaderProps {
 
 export const AppHeader: React.FC<AppHeaderProps> = ({
     handleNewTrip,
+    handleClearTable,
     handleOpenSavedList,
     isRefreshingTrips,
     handleOpenSaveModal,
@@ -57,6 +59,9 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
                         <button onClick={handleExport} className="p-2 hover:bg-gray-100 rounded text-green-600" title="导出"><FileSpreadsheet size={18} /></button>
                     </div>
                 )}
+                <button onClick={handleClearTable} className="p-2 hover:bg-red-50 rounded text-red-500" title="清空表格">
+                    <Eraser size={16} />
+                </button>
                 {currentUser && <div className="h-6 w-px bg-gray-300 mx-2"></div>}
                 <button onClick={handleOpenResources} className="flex items-center gap-1 px-3 py-1.5 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 text-sm font-medium transition-colors">
                     {isRefreshingResources ? <Loader2 size={16} className="animate-spin" /> : <Database size={16} />} 资源库

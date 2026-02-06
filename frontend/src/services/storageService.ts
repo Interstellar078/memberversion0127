@@ -2,6 +2,14 @@ import { SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiRe
 import { apiGet, apiPut, apiPost } from './apiClient';
 import { resourceApi } from './resourceApi';
 
+type ChatRole = 'user' | 'assistant' | 'system';
+type ChatMessageRecord = {
+  id: string;
+  role: ChatRole;
+  content: string;
+  timestamp: number;
+};
+
 const KEYS = {
   DB_CARS: 'travel_builder_db_cars',
   DB_CITIES: 'travel_builder_db_poi_cities',
@@ -14,7 +22,8 @@ const KEYS = {
   HISTORY: 'travel_builder_history',
   LOCATIONS: 'travel_builder_locations_history',
   SETTINGS_GLOBAL: 'travel_builder_settings_global',
-  SYSTEM_CONFIG: 'travel_builder_system_config'
+  SYSTEM_CONFIG: 'travel_builder_system_config',
+  AI_CHAT_PREFIX: 'travel_builder_ai_chat'
 };
 
 let currentUser: User | null = null;
@@ -62,6 +71,26 @@ const splitByPublic = <T extends { isPublic?: boolean }>(items: T[]) => {
     else priv.push(item);
   }
   return { pub, priv };
+};
+
+const toSafeChatMessages = (value: unknown): ChatMessageRecord[] => {
+  const source = Array.isArray(value)
+    ? value
+    : (value && typeof value === 'object' && Array.isArray((value as any).messages))
+      ? (value as any).messages
+      : [];
+  return source
+    .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+    .map((item) => {
+      const role = item.role === 'assistant' || item.role === 'system' ? item.role : 'user';
+      const content = typeof item.content === 'string' ? item.content : '';
+      const timestamp = Number.isFinite(Number(item.timestamp)) ? Number(item.timestamp) : Date.now();
+      const id = typeof item.id === 'string' && item.id.trim().length > 0
+        ? item.id
+        : `${role}-${timestamp}`;
+      return { id, role, content, timestamp };
+    })
+    .filter((item) => item.content.trim().length > 0);
 };
 
 export const StorageService = {
@@ -183,6 +212,22 @@ export const StorageService = {
   async saveAppSettings(settings: any): Promise<void> {
     if (!currentUser) return;
     await setData(KEYS.SETTINGS_GLOBAL, settings, false);
+  },
+
+  async getChatMessages(conversationId: string): Promise<ChatMessageRecord[]> {
+    if (!currentUser) return [];
+    const key = `${KEYS.AI_CHAT_PREFIX}:${conversationId}`;
+    const payload = await getData<any>(key, { messages: [] }, 'private');
+    return toSafeChatMessages(payload);
+  },
+  async saveChatMessages(conversationId: string, messages: ChatMessageRecord[]): Promise<void> {
+    if (!currentUser) return;
+    const key = `${KEYS.AI_CHAT_PREFIX}:${conversationId}`;
+    await setData(key, {
+      version: 1,
+      updatedAt: Date.now(),
+      messages: toSafeChatMessages(messages),
+    }, false);
   },
 
   async getUserProfiles(): Promise<User[]> {

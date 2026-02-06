@@ -20,6 +20,114 @@ import { ItineraryTable } from './components/ItineraryTable';
 import { ItineraryCardList } from './components/ItineraryCardList';
 
 const INITIAL_ROWS = 8;
+const CHAT_LOCAL_PREFIX = 'travel_builder_ai_chat';
+const CHAT_MESSAGE_LIMIT = 100;
+const CHAT_SAVE_DEBOUNCE_MS = 1200;
+const CHAT_WELCOME_CONTENT = '您好！我是星艾，您的智能行程规划助手。\n您可以告诉我您的目的地、天数和偏好，我会为您生成专业行程。\n或者在现有行程上，让我帮您调整细节。';
+const DRAFT_LOCAL_PREFIX = 'travel_builder_draft_v1';
+const DRAFT_SAVE_DEBOUNCE_MS = 1000;
+
+type LocalDraft = {
+    version: number;
+    updatedAt: number;
+    settings: TripSettings;
+    rows: DayRow[];
+    customColumns: CustomColumn[];
+    activeTripId: string | null;
+    viewMode: 'table' | 'card';
+};
+
+const createWelcomeMessage = (): ChatMessage => ({
+    id: 'init',
+    role: 'assistant',
+    content: CHAT_WELCOME_CONTENT,
+    timestamp: Date.now()
+});
+
+const chatStorageScope = (username?: string | null) => username ? `user:${username}` : 'anon';
+const buildLocalChatKey = (conversationId: string, username?: string | null) => `${CHAT_LOCAL_PREFIX}:${chatStorageScope(username)}:${conversationId}`;
+
+const sanitizeChatMessages = (messages: ChatMessage[]): ChatMessage[] => {
+    const normalized = messages
+        .filter((msg) => !!msg && typeof msg.content === 'string' && msg.content.trim().length > 0)
+        .map((msg) => ({
+            id: msg.id || generateUUID(),
+            role: msg.role === 'assistant' || msg.role === 'system' ? msg.role : 'user',
+            content: msg.content,
+            timestamp: Number.isFinite(Number(msg.timestamp)) ? Number(msg.timestamp) : Date.now()
+        })) as ChatMessage[];
+
+    const trimmed = normalized.slice(-CHAT_MESSAGE_LIMIT);
+    return trimmed.length > 0 ? trimmed : [createWelcomeMessage()];
+};
+
+const loadLocalChatMessages = (conversationId: string, username?: string | null): ChatMessage[] => {
+    try {
+        const raw = localStorage.getItem(buildLocalChatKey(conversationId, username));
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return sanitizeChatMessages(parsed as ChatMessage[]);
+    } catch {
+        return [];
+    }
+};
+
+const persistLocalChatMessages = (conversationId: string, username: string | null, messages: ChatMessage[]) => {
+    try {
+        localStorage.setItem(buildLocalChatKey(conversationId, username), JSON.stringify(sanitizeChatMessages(messages)));
+    } catch {
+        // Ignore localStorage quota or browser errors.
+    }
+};
+
+const draftStorageScope = (username?: string | null) => username ? `user:${username}` : 'anon';
+const buildLocalDraftKey = (username?: string | null) => `${DRAFT_LOCAL_PREFIX}:${draftStorageScope(username)}`;
+
+const readLocalDraft = (username?: string | null): LocalDraft | null => {
+    try {
+        const raw = localStorage.getItem(buildLocalDraftKey(username));
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as Partial<LocalDraft>;
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (!parsed.settings || !Array.isArray(parsed.rows) || !Array.isArray(parsed.customColumns)) return null;
+        return {
+            version: 1,
+            updatedAt: Number.isFinite(Number(parsed.updatedAt)) ? Number(parsed.updatedAt) : Date.now(),
+            settings: parsed.settings as TripSettings,
+            rows: parsed.rows as DayRow[],
+            customColumns: parsed.customColumns as CustomColumn[],
+            activeTripId: typeof parsed.activeTripId === 'string' ? parsed.activeTripId : null,
+            viewMode: parsed.viewMode === 'card' ? 'card' : 'table',
+        };
+    } catch {
+        return null;
+    }
+};
+
+const writeLocalDraft = (username: string | null, draft: LocalDraft) => {
+    try {
+        localStorage.setItem(buildLocalDraftKey(username), JSON.stringify(draft));
+    } catch {
+        // Ignore localStorage quota or browser errors.
+    }
+};
+
+const clearLocalDraft = (username?: string | null) => {
+    try {
+        localStorage.removeItem(buildLocalDraftKey(username));
+    } catch {
+        // Ignore localStorage errors.
+    }
+};
+
+const clearLocalChat = (conversationId: string, username?: string | null) => {
+    try {
+        localStorage.removeItem(buildLocalChatKey(conversationId, username));
+    } catch {
+        // Ignore localStorage errors.
+    }
+};
 
 export default function App() {
     // --- Auth State ---
@@ -29,6 +137,7 @@ export default function App() {
 
     // --- App State ---
     const [isAppLoading, setIsAppLoading] = useState(true);
+    const [isAuthResolved, setIsAuthResolved] = useState(false);
     const [dataLoadedSuccessfully, setDataLoadedSuccessfully] = useState(false);
     const [cloudStatus, setCloudStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
     const [notification, setNotification] = useState<{ show: boolean, message: string }>({ show: false, message: '' });
@@ -128,9 +237,13 @@ export default function App() {
         return id;
     });
 
-    const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-        { id: 'init', role: 'assistant', content: '您好！我是星艾，您的智能行程规划助手。\n您可以告诉我您的目的地、天数和偏好，我会为您生成专业行程。\n或者在现有行程上，让我帮您调整细节。', timestamp: Date.now() }
-    ]);
+    const [chatMessages, setChatMessages] = useState<ChatMessage[]>([createWelcomeMessage()]);
+    const [isChatHydrated, setIsChatHydrated] = useState(false);
+    const chatLoadedScopeRef = useRef<string>('');
+    const chatSaveTimerRef = useRef<number | null>(null);
+    const [isDraftHydrated, setIsDraftHydrated] = useState(false);
+    const draftLoadedScopeRef = useRef<string>('');
+    const draftSaveTimerRef = useRef<number | null>(null);
 
     const [colWidths, setColWidths] = useState<Record<string, number>>({
         day: 40, date: 105, route: 150, transport: 190, hotel: 210,
@@ -179,6 +292,8 @@ export default function App() {
             setIsAppLoading(true);
             const user = await AuthService.getCurrentUser();
             if (user) setCurrentUser(user);
+            StorageService.setCurrentUser(user ?? null);
+            setIsAuthResolved(true);
             await loadCloudData(user);
             setIsAppLoading(false);
         };
@@ -188,6 +303,167 @@ export default function App() {
     useEffect(() => {
         StorageService.setCurrentUser(currentUser);
     }, [currentUser]);
+
+    useEffect(() => {
+        if (!isAuthResolved) return;
+        const username = currentUser?.username ?? null;
+        const scope = chatStorageScope(username);
+        let canceled = false;
+
+        setIsChatHydrated(false);
+
+        const hydrateChat = async () => {
+            const userLocal = loadLocalChatMessages(conversationId, username);
+            const anonLocal = username ? loadLocalChatMessages(conversationId, null) : [];
+            const localSeed = userLocal.length > 0
+                ? userLocal
+                : (anonLocal.length > 0 ? anonLocal : [createWelcomeMessage()]);
+
+            setChatMessages(localSeed);
+
+            if (username) {
+                StorageService.setCurrentUser(currentUser);
+                const remote = await StorageService.getChatMessages(conversationId);
+                if (canceled) return;
+
+                if (remote.length > 0) {
+                    const remoteMessages = sanitizeChatMessages(remote as ChatMessage[]);
+                    setChatMessages(remoteMessages);
+                    persistLocalChatMessages(conversationId, username, remoteMessages);
+                } else if (localSeed.length > 0) {
+                    await StorageService.saveChatMessages(conversationId, localSeed).catch((err) => {
+                        console.warn('Failed to seed chat history to cloud', err);
+                    });
+                    persistLocalChatMessages(conversationId, username, localSeed);
+                }
+            } else {
+                persistLocalChatMessages(conversationId, null, localSeed);
+            }
+
+            if (canceled) return;
+            chatLoadedScopeRef.current = scope;
+            setIsChatHydrated(true);
+        };
+
+        hydrateChat().catch((err) => {
+            console.error('Failed to hydrate chat history', err);
+            if (!canceled) {
+                chatLoadedScopeRef.current = scope;
+                setChatMessages([createWelcomeMessage()]);
+                setIsChatHydrated(true);
+            }
+        });
+
+        return () => {
+            canceled = true;
+        };
+    }, [conversationId, currentUser?.username, isAuthResolved]);
+
+    useEffect(() => {
+        if (!isChatHydrated) return;
+        const username = currentUser?.username ?? null;
+        const scope = chatStorageScope(username);
+        if (chatLoadedScopeRef.current !== scope) return;
+
+        const normalized = sanitizeChatMessages(chatMessages);
+        persistLocalChatMessages(conversationId, username, normalized);
+
+        if (!username) return;
+        if (chatSaveTimerRef.current) {
+            window.clearTimeout(chatSaveTimerRef.current);
+        }
+        chatSaveTimerRef.current = window.setTimeout(() => {
+            StorageService.saveChatMessages(conversationId, normalized).catch((err) => {
+                console.warn('Failed to sync chat history to cloud', err);
+            });
+        }, CHAT_SAVE_DEBOUNCE_MS);
+
+        return () => {
+            if (chatSaveTimerRef.current) {
+                window.clearTimeout(chatSaveTimerRef.current);
+                chatSaveTimerRef.current = null;
+            }
+        };
+    }, [chatMessages, conversationId, currentUser?.username, isChatHydrated]);
+
+    const appendChatMessage = (message: ChatMessage) => {
+        setChatMessages((prev) => sanitizeChatMessages([...prev, message]));
+    };
+
+    useEffect(() => {
+        if (!isAuthResolved) return;
+        const username = currentUser?.username ?? null;
+        const scope = draftStorageScope(username);
+        let canceled = false;
+
+        setIsDraftHydrated(false);
+
+        const hydrateDraft = () => {
+            const userDraft = readLocalDraft(username);
+            const anonDraft = username ? readLocalDraft(null) : null;
+            const draft = userDraft || anonDraft;
+
+            if (draft) {
+                setSettings(prev => ({ ...prev, ...(draft.settings || {}) }));
+                if (Array.isArray(draft.rows) && draft.rows.length > 0) {
+                    setRows(draft.rows);
+                }
+                if (Array.isArray(draft.customColumns)) {
+                    setCustomColumns(draft.customColumns);
+                }
+                if (typeof draft.activeTripId === 'string' || draft.activeTripId === null) {
+                    setActiveTripId(draft.activeTripId);
+                }
+                if (draft.viewMode === 'table' || draft.viewMode === 'card') {
+                    setViewMode(draft.viewMode);
+                }
+                if (username && !userDraft && anonDraft) {
+                    writeLocalDraft(username, anonDraft);
+                }
+            }
+
+            if (canceled) return;
+            draftLoadedScopeRef.current = scope;
+            setIsDraftHydrated(true);
+        };
+
+        hydrateDraft();
+
+        return () => {
+            canceled = true;
+        };
+    }, [isAuthResolved, currentUser?.username]);
+
+    useEffect(() => {
+        if (!isDraftHydrated) return;
+        const username = currentUser?.username ?? null;
+        const scope = draftStorageScope(username);
+        if (draftLoadedScopeRef.current !== scope) return;
+
+        const snapshot: LocalDraft = {
+            version: 1,
+            updatedAt: Date.now(),
+            settings,
+            rows,
+            customColumns,
+            activeTripId,
+            viewMode,
+        };
+
+        if (draftSaveTimerRef.current) {
+            window.clearTimeout(draftSaveTimerRef.current);
+        }
+        draftSaveTimerRef.current = window.setTimeout(() => {
+            writeLocalDraft(username, snapshot);
+        }, DRAFT_SAVE_DEBOUNCE_MS);
+
+        return () => {
+            if (draftSaveTimerRef.current) {
+                window.clearTimeout(draftSaveTimerRef.current);
+                draftSaveTimerRef.current = null;
+            }
+        };
+    }, [settings, rows, customColumns, activeTripId, viewMode, isDraftHydrated, currentUser?.username]);
 
 
 
@@ -859,6 +1135,8 @@ export default function App() {
         console.log('App Version: DND Removed Fix 1.0');
     }, []);
 
+    const buildInitialRows = () => Array.from({ length: INITIAL_ROWS }).map((_, i) => createEmptyRow(i + 1));
+
     const handleNewTrip = () => {
         if (window.confirm("确定要新建行程吗？当前未保存的内容将丢失。")) {
             setActiveTripId(null);
@@ -868,9 +1146,36 @@ export default function App() {
                 startDate: new Date().toISOString().split('T')[0],
                 marginPercent: isMember ? systemConfig.defaultMargin : settings.marginPercent
             });
-            setRows(Array.from({ length: 8 }).map((_, i) => createEmptyRow(i + 1)));
+            setRows(buildInitialRows());
             setCustomColumns([]);
         }
+    };
+
+    const handleClearTable = () => {
+        if (!window.confirm("确定清空当前表格数据吗？此操作会清除当前天数行程明细。")) return;
+        setActiveTripId(null);
+        setRows(buildInitialRows());
+        setCustomColumns([]);
+        const username = currentUser?.username ?? null;
+        clearLocalDraft(username);
+        if (username) clearLocalDraft(null);
+        setNotification({ show: true, message: '表格已清空' });
+        setTimeout(() => setNotification({ show: false, message: '' }), 2500);
+    };
+
+    const handleClearChat = async () => {
+        if (!window.confirm("确定清理聊天记录吗？")) return;
+        const username = currentUser?.username ?? null;
+        setChatMessages([createWelcomeMessage()]);
+        clearLocalChat(conversationId, username);
+        if (username) clearLocalChat(conversationId, null);
+        if (username) {
+            await StorageService.saveChatMessages(conversationId, []).catch((err) => {
+                console.warn('Failed to clear cloud chat messages', err);
+            });
+        }
+        setNotification({ show: true, message: '聊天记录已清理' });
+        setTimeout(() => setNotification({ show: false, message: '' }), 2500);
     };
 
     const handleExport = () => {
@@ -904,13 +1209,19 @@ export default function App() {
         const historyForAi = [...chatMessages, userMsg]
             .slice(-10)
             .map(m => ({ role: m.role, content: m.content }));
-        setChatMessages(prev => [...prev, userMsg]);
+        appendChatMessage(userMsg);
         setIsGenerating(true);
 
 
         const normalizeList = (value?: string[] | string) => {
             if (!value) return [] as string[];
             if (Array.isArray(value)) return value;
+            return value.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
+        };
+
+        const normalizeIdList = (value?: string[] | string | null) => {
+            if (!value) return [] as string[];
+            if (Array.isArray(value)) return value.map(v => (v ?? '').toString().trim()).filter(Boolean);
             return value.split(/[,，、]/).map(s => s.trim()).filter(Boolean);
         };
 
@@ -941,6 +1252,15 @@ export default function App() {
             return isForeign ? uniqCountries : uniqCities;
         };
 
+        const visibleSpots = poiSpots.filter(isResourceVisible);
+        const visibleActivities = poiActivities.filter(isResourceVisible);
+        const visibleHotels = poiHotels.filter(isResourceVisible);
+        const spotById = new Map(visibleSpots.map((v) => [v.id, v]));
+        const activityById = new Map(visibleActivities.map((v) => [v.id, v]));
+        const hotelById = new Map(visibleHotels.map((v) => [v.id, v]));
+
+        const firstByName = <T extends { name: string }>(list: T[], name: string) => list.find((v) => v.name === name);
+
         try {
             const result: ItineraryResponse = await generateItinerary({
                 currentDestinations: settings.destinations,
@@ -962,7 +1282,7 @@ export default function App() {
                     content: result.error,
                     timestamp: Date.now()
                 };
-                setChatMessages(prev => [...prev, aiMsg]);
+                appendChatMessage(aiMsg);
                 return;
             }
 
@@ -986,34 +1306,83 @@ export default function App() {
                     const idx = (item.day || 1) - 1;
                     if (idx >= 0 && idx < newRows.length) {
                         const currentRow = newRows[idx];
+                        const rawItem = item as any;
                         let routeStr = currentRow.route;
-                        if (item.route) {
-                            routeStr = item.route;
-                        } else if (item.s_city || item.e_city) {
-                            const start = item.s_city || currentRow.route.split('-')[0] || '';
-                            const end = item.e_city || currentRow.route.split('-')[1] || '';
+                        const startCity = item.s_city || rawItem?.sCity || rawItem?.startCity || rawItem?.fromCity || '';
+                        const endCity = item.e_city || rawItem?.eCity || rawItem?.endCity || rawItem?.toCity || '';
+                        if (item.route && item.route.trim()) {
+                            routeStr = item.route.trim();
+                        } else if (startCity || endCity) {
+                            const start = startCity || currentRow.route.split('-')[0] || '';
+                            const end = endCity || currentRow.route.split('-')[1] || '';
                             if (start && end) routeStr = `${start} -${end} `;
                         }
 
-                        const ticketIds = Array.isArray(item.ticketIds) ? item.ticketIds : [];
-                        const activityIds = Array.isArray(item.activityIds) ? item.activityIds : [];
-                        const ticketItems: GeneralItem[] = normalizeList(item.ticketName).map((s, i) => ({
-                            id: ticketIds[i] || generateUUID(),
-                            name: s,
-                            quantity: settings.peopleCount,
-                            price: 0,
-                            sourcePublic: false
-                        }));
-                        const activityItems: GeneralItem[] = normalizeList(item.activityName).map((s, i) => ({
-                            id: activityIds[i] || generateUUID(),
-                            name: s,
-                            quantity: settings.peopleCount,
-                            price: 0,
-                            sourcePublic: false
-                        }));
-                        const hotelItems: HotelItem[] = item.hotelName
-                            ? [{ id: item.hotelId || generateUUID(), name: item.hotelName, roomType: '标准间', quantity: settings.roomCount, price: 0, sourcePublic: false }]
+                        const ticketIds = normalizeIdList(item.ticketIds);
+                        const activityIds = normalizeIdList(item.activityIds);
+                        const ticketNames = normalizeList(item.ticketName);
+                        const activityNames = normalizeList(item.activityName);
+                        const resolvedTicketNames = ticketNames.length > 0
+                            ? ticketNames
+                            : ticketIds.map((id) => spotById.get(id)?.name || id).filter(Boolean);
+                        const resolvedActivityNames = activityNames.length > 0
+                            ? activityNames
+                            : activityIds.map((id) => activityById.get(id)?.name || id).filter(Boolean);
+
+                        const ticketItems: GeneralItem[] = resolvedTicketNames.map((s, i) => {
+                            const resolvedId = ticketIds[i];
+                            const byId = resolvedId ? spotById.get(resolvedId) : undefined;
+                            const byName = byId || firstByName(visibleSpots, s);
+                            return {
+                                id: resolvedId || byName?.id || generateUUID(),
+                                name: byName?.name || s,
+                                quantity: settings.peopleCount,
+                                price: byName?.price || 0,
+                                sourcePublic: !!(byName?.isPublic || !byName?.createdBy)
+                            };
+                        });
+                        const activityItems: GeneralItem[] = resolvedActivityNames.map((s, i) => {
+                            const resolvedId = activityIds[i];
+                            const byId = resolvedId ? activityById.get(resolvedId) : undefined;
+                            const byName = byId || firstByName(visibleActivities, s);
+                            return {
+                                id: resolvedId || byName?.id || generateUUID(),
+                                name: byName?.name || s,
+                                quantity: settings.peopleCount,
+                                price: byName?.price || 0,
+                                sourcePublic: !!(byName?.isPublic || !byName?.createdBy)
+                            };
+                        });
+
+                        const resolvedHotel = (item.hotelId ? hotelById.get(item.hotelId) : undefined)
+                            || (item.hotelName ? firstByName(visibleHotels, item.hotelName) : undefined);
+                        const resolvedHotelName = item.hotelName || resolvedHotel?.name;
+                        const hotelItems: HotelItem[] = resolvedHotelName
+                            ? [{
+                                id: item.hotelId || resolvedHotel?.id || generateUUID(),
+                                name: resolvedHotelName,
+                                roomType: resolvedHotel?.roomType || '标准间',
+                                quantity: settings.roomCount,
+                                price: resolvedHotel?.price || 0,
+                                sourcePublic: !!(resolvedHotel?.isPublic || !resolvedHotel?.createdBy)
+                            }]
                             : currentRow.hotelDetails;
+
+                        const detailCandidates = [
+                            item.description,
+                            rawItem?.detail,
+                            rawItem?.details,
+                            rawItem?.desc,
+                            rawItem?.note,
+                        ]
+                            .map((v: any) => typeof v === 'string' ? v.trim() : '')
+                            .filter(Boolean);
+                        const computedDetail = [
+                            resolvedHotelName ? `入住${resolvedHotelName}` : '',
+                            ticketItems.length > 0 ? `游览${ticketItems.map((t) => t.name).slice(0, 3).join('、')}` : '',
+                            activityItems.length > 0 ? `体验${activityItems.map((a) => a.name).slice(0, 3).join('、')}` : '',
+                        ].filter(Boolean).join('；');
+                        const finalDescription = detailCandidates[0] || computedDetail || currentRow.description;
 
                         const numTransportCost = Number.isFinite(Number(item.transportCost)) ? Number(item.transportCost) : null;
                         const numHotelCost = Number.isFinite(Number(item.hotelCost)) ? Number(item.hotelCost) : null;
@@ -1027,7 +1396,7 @@ export default function App() {
                             hotelDetails: hotelItems,
                             ticketDetails: ticketItems.length > 0 ? ticketItems : currentRow.ticketDetails,
                             activityDetails: activityItems.length > 0 ? activityItems : currentRow.activityDetails,
-                            description: item.description || currentRow.description,
+                            description: finalDescription,
                             transportCost: numTransportCost !== null ? numTransportCost : currentRow.transportCost,
                             hotelCost: numHotelCost !== null ? numHotelCost : currentRow.hotelCost,
                             ticketCost: numTicketCost !== null ? numTicketCost : currentRow.ticketCost,
@@ -1058,7 +1427,7 @@ export default function App() {
 请检查细节，如果不满意，告诉我具体哪里需要修改。`,
                     timestamp: Date.now()
                 };
-                setChatMessages(prev => [...prev, aiMsg]);
+                appendChatMessage(aiMsg);
                 setNotification({ show: true, message: 'AI 规划完成！请点击“刷新价格”以计算最新费用。' });
 
                 setTimeout(() => setNotification({ show: false, message: '' }), 4000);
@@ -1076,7 +1445,7 @@ ${msg}
 
 请稍后再试。`, timestamp: Date.now()
             };
-            setChatMessages(prev => [...prev, errorMsg]);
+            appendChatMessage(errorMsg);
         } finally {
             setIsGenerating(false);
         }
@@ -1107,6 +1476,7 @@ ${msg}
         <div className="h-screen overflow-hidden bg-gray-50 flex flex-col font-sans text-gray-900">
             <AppHeader
                 handleNewTrip={handleNewTrip}
+                handleClearTable={handleClearTable}
                 handleOpenSavedList={handleOpenSavedList}
                 isRefreshingTrips={isRefreshingTrips}
                 handleOpenSaveModal={handleOpenSaveModal}
@@ -1236,6 +1606,7 @@ ${msg}
                 <AIChatSidebar
                     messages={chatMessages}
                     onSendMessage={handleChatRequest}
+                    onClearMessages={handleClearChat}
                     isGenerating={isGenerating}
                     isOpen={isChatOpen}
                     onToggle={() => setIsChatOpen(!isChatOpen)}
