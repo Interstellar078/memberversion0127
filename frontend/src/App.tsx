@@ -1261,7 +1261,7 @@ ${msg}
                 )}
             </div>
 
-            {showAuthModal && <AuthModal onLoginSuccess={async (u) => { setCurrentUser(u); setShowAuthModal(false); setIsAppLoading(true); await loadCloudData(u); setIsAppLoading(false); setNotification({ show: true, message: `欢迎回来, ${u.username} ` }); setTimeout(() => setNotification({ show: false, message: '' }), 3000); }} />}
+            {showAuthModal && <AuthModal onLoginSuccess={async (u) => { setCurrentUser(u); setShowAuthModal(false); setIsAppLoading(true); await loadCloudData(u); setIsAppLoading(false); setNotification({ show: true, message: `欢迎回来, ${u.username} ` }); setTimeout(() => setNotification({ show: false, message: '' }), 3000); }} onClose={() => setShowAuthModal(false)} />}
             {showAdminDashboard && currentUser && <AdminDashboard currentUser={currentUser} onClose={() => setShowAdminDashboard(false)} />}
             <ResourceDatabase
                 isOpen={isResourceOpen} onClose={() => setIsResourceOpen(false)}

@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
-import { User, Lock, ArrowRight, Loader2, Sparkles } from 'lucide-react';
+import { User, Lock, ArrowRight, Loader2, Sparkles, X } from 'lucide-react';
 import { AuthService } from '../services/authService';
 import { User as UserType } from '../types';
 
 interface AuthModalProps {
   onLoginSuccess: (user: UserType) => void;
+  onClose?: () => void;
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
+export const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess, onClose }) => {
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -59,105 +60,122 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onLoginSuccess }) => {
   };
 
   return (
-    <div className="fixed inset-0 bg-white/30 backdrop-blur-md z-[100] flex items-center justify-center p-4 transition-all duration-300">
-      <div className="bg-white/90 backdrop-blur-xl rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white/20 w-full max-w-[380px] overflow-hidden transform transition-all ring-1 ring-gray-900/5">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 transition-all duration-500 animate-in fade-in bg-black/40 backdrop-blur-sm">
+      <div className="relative bg-white/80 backdrop-blur-xl rounded-3xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.15)] border border-white/40 w-full max-w-[400px] overflow-hidden transform hover:scale-[1.005] transition-all duration-300 ring-1 ring-white/50">
 
-        {/* Minimalist Header */}
-        <div className="pt-8 px-8 pb-2 text-center">
-          <div className="w-12 h-12 bg-blue-50 rounded-xl flex items-center justify-center mx-auto mb-4 text-blue-600">
-            <Sparkles size={24} />
+        {/* Close Button */}
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100/50 rounded-full transition-colors z-10"
+            title="关闭"
+          >
+            <X size={20} />
+          </button>
+        )}
+
+        {/* Header */}
+        <div className="pt-10 px-8 pb-4 text-center">
+          <div className="w-14 h-14 bg-gradient-to-br from-indigo-50 to-blue-50 rounded-2xl flex items-center justify-center mx-auto mb-5 shadow-inner border border-white/50 text-indigo-600 transform rotate-3">
+            <Sparkles size={28} className="drop-shadow-sm" />
           </div>
-          <h2 className="text-xl font-bold text-gray-900">
-            {isLogin ? '欢迎回来' : '创建账号'}
+          <h2 className="text-2xl font-black bg-gradient-to-br from-gray-900 to-gray-700 bg-clip-text text-transparent mb-2 tracking-tight">
+            {isLogin ? '欢迎回来' : '开启旅程'}
           </h2>
-          <p className="text-sm text-gray-500 mt-1">
-            {isLogin ? '登录以继续您的定制之旅' : '开始体验智能行程规划'}
+          <p className="text-sm text-gray-500 font-medium">
+            {isLogin ? '登录以管理您的定制行程' : '注册账号，体验智能行程规划'}
           </p>
         </div>
 
-        <div className="p-8 pt-6">
-          {/* Toggle Switch */}
-          {/* Toggle removed, moved to bottom */}
-
-          <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="relative group">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <User size={16} className="text-gray-400 group-focus-within:text-blue-500 transition-colors" />
+        <div className="p-8 pt-2">
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-3">
+              <div className="relative group">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                  <User size={18} className="text-gray-400 group-focus-within:text-indigo-500 transition-colors" />
+                </div>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="block w-full pl-10 pr-4 py-3 bg-gray-50/50 border border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 focus:bg-white text-sm font-medium transition-all placeholder:text-gray-400"
+                  placeholder="用户名"
+                />
               </div>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="block w-full pl-9 pr-3 py-2.5 bg-gray-50/50 border border-gray-200/60 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white text-sm transition-all placeholder:text-gray-400/80"
-                placeholder="用户名"
-              />
-            </div>
 
-            <div className="relative group">
-              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                <Lock size={16} className="text-gray-400 group-focus-within:text-blue-500 transition-colors" />
-              </div>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="block w-full pl-9 pr-3 py-2.5 bg-gray-50/50 border border-gray-200/60 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white text-sm transition-all placeholder:text-gray-400/80"
-                placeholder="密码"
-              />
-            </div>
-
-            {!isLogin && (
-              <div className="relative group animate-fade-in">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <Lock size={16} className="text-gray-400 group-focus-within:text-blue-500 transition-colors" />
+              <div className="relative group">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                  <Lock size={18} className="text-gray-400 group-focus-within:text-indigo-500 transition-colors" />
                 </div>
                 <input
                   type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="block w-full pl-9 pr-3 py-2.5 bg-gray-50/50 border border-gray-200/60 rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white text-sm transition-all placeholder:text-gray-400/80"
-                  placeholder="确认密码"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="block w-full pl-10 pr-4 py-3 bg-gray-50/50 border border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 focus:bg-white text-sm font-medium transition-all placeholder:text-gray-400"
+                  placeholder="密码"
                 />
               </div>
-            )}
+
+              {!isLogin && (
+                <div className="relative group animate-in slide-in-from-top-2 fade-in duration-300">
+                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+                    <Lock size={18} className="text-gray-400 group-focus-within:text-indigo-500 transition-colors" />
+                  </div>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="block w-full pl-10 pr-4 py-3 bg-gray-50/50 border border-gray-200 rounded-xl focus:ring-4 focus:ring-indigo-500/10 focus:border-indigo-500 focus:bg-white text-sm font-medium transition-all placeholder:text-gray-400"
+                    placeholder="确认密码"
+                  />
+                </div>
+              )}
+            </div>
 
             {error && (
-              <div className="text-red-500 text-xs text-center bg-red-50 py-2 rounded-lg flex items-center justify-center gap-1 animate-fade-in">
-                <span>!</span> {error}
+              <div className="text-red-500 text-xs text-center bg-red-50 py-2.5 rounded-xl border border-red-100 flex items-center justify-center gap-1.5 animate-in shake">
+                <span className="w-4 h-4 rounded-full bg-red-100 flex items-center justify-center text-[10px] font-bold">!</span> {error}
               </div>
             )}
 
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full flex justify-center items-center gap-2 py-2.5 px-4 bg-gray-900 hover:bg-black text-white rounded-lg text-sm font-medium transition-all transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-gray-200 mt-2"
+              className="w-full flex justify-center items-center gap-2 py-3.5 px-6 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-[15px] font-semibold transition-all shadow-lg shadow-blue-200 hover:shadow-blue-300 active:scale-[0.98] disabled:opacity-70 disabled:cursor-not-allowed group"
             >
-              {isLoading ? <Loader2 size={16} className="animate-spin" /> : <>
-                {isLogin ? '登 录' : '立即注册'} <ArrowRight size={16} />
+              {isLoading ? <Loader2 size={18} className="animate-spin" /> : <>
+                {isLogin ? '立即登录' : '创建账号'} <ArrowRight size={18} className="group-hover:translate-x-0.5 transition-transform" />
               </>}
             </button>
 
-            <div className="text-center mt-4">
+            <div className="flex items-center justify-between text-xs pt-2">
               <button
                 type="button"
                 onClick={() => { setIsLogin(!isLogin); setError(''); setPassword(''); setConfirmPassword(''); }}
-                className="text-sm text-gray-500 hover:text-gray-800 transition-colors"
+                className="text-gray-500 hover:text-indigo-600 font-medium transition-colors"
               >
-                {isLogin ? (
-                  <>还没有账号? <span className="font-bold text-blue-600">立即注册</span></>
-                ) : (
-                  <>已有账号? <span className="font-bold text-blue-600">直接登录</span></>
-                )}
+                {isLogin ? '没有账号？注册新账号' : '已有账号？返回登录'}
               </button>
-            </div>
-          </form>
-        </div>
 
-        {/* Footer */}
-        <div className="px-8 py-4 bg-gray-50 border-t border-gray-100 text-center">
-          <p className="text-[10px] text-gray-400">
-            星际云旅行 · 智能行程定制系统
-          </p>
+              {isLogin && (
+                <span className="text-gray-300 cursor-not-allowed">忘记密码?</span>
+              )}
+            </div>
+
+            {/* Guest Mode Option */}
+            {onClose && (
+              <div className="pt-4 mt-2 border-t border-gray-100 text-center">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="text-xs text-gray-400 hover:text-gray-600 transition-colors inline-flex items-center gap-1"
+                >
+                  暂不登录，以游客身份浏览 &rarr;
+                </button>
+              </div>
+            )}
+
+          </form>
         </div>
       </div>
     </div>
