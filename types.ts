@@ -238,3 +238,37 @@ export interface AuditLog {
   action: string; 
   details: string;
 }
+
+// --- COMMUNITY FEATURES ---
+
+export interface PublishedTrip {
+  id: string; // Unique Post ID
+  tripSnapshot: SavedTrip; // Full data copy
+  authorId: string;
+  authorName: string;
+  title: string;
+  description: string;
+  publishedAt: number;
+  likes: number; 
+  likedBy: string[]; // Usernames who liked
+  viewCount: number;
+  commentCount: number;
+  tags: string[]; // e.g., ["Japan", "Spring"]
+}
+
+export interface Comment {
+  id: string;
+  postId: string;
+  userId: string; // Author username
+  content: string;
+  createdAt: number;
+}
+
+export interface Message {
+  id: string;
+  fromUser: string;
+  toUser: string;
+  content: string;
+  read: boolean;
+  createdAt: number;
+}

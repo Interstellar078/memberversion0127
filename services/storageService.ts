@@ -1,5 +1,5 @@
 
-import { SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, User, ResourceMetadata, ResourceFile } from '../types';
+import { SavedTrip, CarCostEntry, PoiCity, PoiSpot, PoiHotel, PoiActivity, PoiOther, CountryFile, User, ResourceMetadata, ResourceFile, PublishedTrip, Comment, Message } from '../types';
 import { SupabaseManager } from './supabaseClient';
 
 const KEYS = {
@@ -15,7 +15,15 @@ const KEYS = {
   HISTORY: 'travel_builder_history',
   LOCATIONS: 'travel_builder_locations_history',
   SETTINGS_GLOBAL: 'travel_builder_settings_global',
-  SYSTEM_CONFIG: 'travel_builder_system_config'
+  SYSTEM_CONFIG: 'travel_builder_system_config',
+  
+  // Community Keys
+  COMMUNITY_POSTS: 'travel_builder_community_posts',
+  // Comments stored as 'comm_comments_{postId}' dynamically or one big blob for MVP? 
+  // For MVP with small traffic, one blob 'travel_builder_community_comments' is safer for consistency, 
+  // but better to split. Let's use one big array for simplicity in this architecture.
+  COMMUNITY_COMMENTS: 'travel_builder_community_comments', 
+  // Messages stored per user 'msg_inbox_{username}'
 };
 
 const db = {
@@ -105,7 +113,7 @@ export const StorageService = {
   async getActivities(): Promise<PoiActivity[]> { return db.get(KEYS.DB_ACTIVITIES, []); },
   async getOthers(): Promise<PoiOther[]> { return db.get(KEYS.DB_OTHERS, []); }, 
   async getFiles(): Promise<CountryFile[]> { return db.get(KEYS.DB_FILES, []); },
-  async getResourceFiles(): Promise<ResourceFile[]> { return db.get(KEYS.DB_RESOURCE_FILES, []); }, // New
+  async getResourceFiles(): Promise<ResourceFile[]> { return db.get(KEYS.DB_RESOURCE_FILES, []); }, 
   async getTrips(): Promise<SavedTrip[]> { return db.get(KEYS.HISTORY, []); },
   async getLocations(): Promise<string[]> { return db.get(KEYS.LOCATIONS, []); },
   
@@ -122,9 +130,31 @@ export const StorageService = {
   async saveActivities(data: PoiActivity[]): Promise<void> { return db.set(KEYS.DB_ACTIVITIES, data); },
   async saveOthers(data: PoiOther[]): Promise<void> { return db.set(KEYS.DB_OTHERS, data); }, 
   async saveFiles(data: CountryFile[]): Promise<void> { return db.set(KEYS.DB_FILES, data); },
-  async saveResourceFiles(data: ResourceFile[]): Promise<void> { return db.set(KEYS.DB_RESOURCE_FILES, data); }, // New
+  async saveResourceFiles(data: ResourceFile[]): Promise<void> { return db.set(KEYS.DB_RESOURCE_FILES, data); }, 
   async saveTrips(data: SavedTrip[]): Promise<void> { return db.set(KEYS.HISTORY, data); },
   async saveLocations(data: string[]): Promise<void> { return db.set(KEYS.LOCATIONS, data); },
+
+  // --- Community Data ---
+  async getPublishedTrips(): Promise<PublishedTrip[]> {
+      return db.get(KEYS.COMMUNITY_POSTS, []);
+  },
+  async savePublishedTrips(posts: PublishedTrip[]): Promise<void> {
+      return db.set(KEYS.COMMUNITY_POSTS, posts);
+  },
+  
+  async getAllComments(): Promise<Comment[]> {
+      return db.get(KEYS.COMMUNITY_COMMENTS, []);
+  },
+  async saveAllComments(comments: Comment[]): Promise<void> {
+      return db.set(KEYS.COMMUNITY_COMMENTS, comments);
+  },
+
+  async getMessages(username: string): Promise<Message[]> {
+      return db.get(`msg_inbox_${username}`, []);
+  },
+  async saveMessages(username: string, msgs: Message[]): Promise<void> {
+      return db.set(`msg_inbox_${username}`, msgs);
+  },
 
   // --- User Profiles ---
   async getUserProfiles(): Promise<User[]> {

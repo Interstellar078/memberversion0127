@@ -88,7 +88,7 @@ const FileRow: React.FC<{
 // --- Standalone FileTable Component ---
 const FileTable: React.FC<{
   category: ResourceFile['category'];
-  files: ResourceFile[];
+  files: ResourceFile[] | null; // Nullable for lazy loading
   canViewFiles: boolean;
   canManageFiles: boolean;
   isUploading: boolean;
@@ -100,9 +100,11 @@ const FileTable: React.FC<{
   onView: (f: ResourceFile) => void;
   onDownload: (f: ResourceFile) => void;
   onEnterKey: (e: React.KeyboardEvent) => void;
+  onLoad: () => void;
+  loading: boolean;
 }> = ({ 
   category, files, canViewFiles, canManageFiles, isUploading, uploadCategory, colWidths,
-  onTriggerUpload, onUpdateDesc, onDelete, onView, onDownload, onEnterKey
+  onTriggerUpload, onUpdateDesc, onDelete, onView, onDownload, onEnterKey, onLoad, loading
 }) => {
     if (!canViewFiles) return null;
     
@@ -124,7 +126,7 @@ const FileTable: React.FC<{
               <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2">
                   <FileIcon size={16} className="text-purple-600"/> 相关文档 / 协议 / 附件
               </h4>
-              {canManageFiles && (
+              {canManageFiles && files !== null && (
                   <button onClick={() => onTriggerUpload(category)} className="text-xs flex items-center gap-1 bg-purple-50 text-purple-700 px-3 py-1.5 rounded hover:bg-purple-100 border border-purple-200">
                       {isUploading && uploadCategory === category ? <Loader2 size={12} className="animate-spin"/> : <Upload size={12}/>}
                       上传文档
@@ -132,7 +134,18 @@ const FileTable: React.FC<{
               )}
           </div>
           
-          {files.length > 0 ? (
+          {files === null ? (
+              <div className="p-6 bg-gray-50 rounded border border-dashed border-gray-300 flex justify-center items-center">
+                  <button 
+                    onClick={onLoad} 
+                    disabled={loading}
+                    className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 shadow-sm rounded text-sm text-gray-700 hover:bg-gray-50 hover:text-blue-600 transition-colors"
+                  >
+                      {loading ? <Loader2 size={16} className="animate-spin"/> : <Download size={16}/>}
+                      点击加载附件列表
+                  </button>
+              </div>
+          ) : files.length > 0 ? (
               <div className="border border-gray-200 rounded-lg overflow-x-auto bg-white shadow-sm">
                   <table className="min-w-full divide-y divide-gray-200">
                        <thead>
@@ -179,7 +192,7 @@ interface ResourceDatabaseProps {
   poiActivities: PoiActivity[];
   poiOthers?: PoiOther[]; 
   countryFiles: CountryFile[];
-  resourceFiles: ResourceFile[];
+  resourceFiles: ResourceFile[] | null; // Nullable for lazy load
   
   onUpdateCarDB: (db: CarCostEntry[]) => void;
   onUpdatePoiCities: (db: PoiCity[]) => void;
@@ -189,6 +202,7 @@ interface ResourceDatabaseProps {
   onUpdatePoiOthers?: (db: PoiOther[]) => void; 
   onUpdateCountryFiles: (files: CountryFile[]) => void;
   onUpdateResourceFiles: (files: ResourceFile[]) => void;
+  onLoadResourceFiles: () => void;
 
   isReadOnly?: boolean;
   currentUser?: User | null;
@@ -200,6 +214,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
   isOpen, onClose,
   carDB, poiCities, poiSpots, poiHotels, poiActivities, poiOthers = [], countryFiles, resourceFiles,
   onUpdateCarDB, onUpdatePoiCities, onUpdatePoiSpots, onUpdatePoiHotels, onUpdatePoiActivities, onUpdatePoiOthers, onUpdateCountryFiles, onUpdateResourceFiles,
+  onLoadResourceFiles,
   isReadOnly = false,
   currentUser,
   onActivity,
@@ -218,7 +233,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
   
   const [colWidths, setColWidths] = useState<Record<string, number>>({
       t_model: 140, t_service: 120, t_pax: 80, t_priceLow: 100, t_priceHigh: 100, t_desc: 250, t_updated: 100,
-      s_name: 200, s_price: 120, s_desc: 250, s_updated: 100,
+      s_name: 200, s_price: 120, s_desc: 250, s_updated: 100, s_room: 150,
       h_name: 200, h_details: 600,
       a_name: 200, a_price: 120, a_desc: 250, a_updated: 100,
       o_name: 200, o_price: 120, o_desc: 300, o_updated: 100,
@@ -227,6 +242,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
 
   // Upload Logic
   const [isUploading, setIsUploading] = useState(false);
+  const [isFileLoading, setIsFileLoading] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [uploadCategory, setUploadCategory] = useState<ResourceFile['category']>('country');
 
@@ -276,7 +292,8 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
     poiCities.filter(isVisible).forEach(c => c.country && s.add(c.country));
     countryFiles.filter(isVisible).forEach(f => f.country && s.add(f.country));
     poiOthers.filter(isVisible).forEach(o => o.country && s.add(o.country));
-    resourceFiles.forEach(f => f.country && s.add(f.country));
+    // If resourceFiles is null, we can't iterate it for country list, which is fine for lazy load.
+    if (resourceFiles) resourceFiles.forEach(f => f.country && s.add(f.country));
     return Array.from(s).sort();
   }, [carDB, poiCities, countryFiles, poiOthers, resourceFiles, currentUser]);
 
@@ -298,7 +315,15 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
   // --- FILE HANDLING ---
   
   const getFilesForCategory = (category: ResourceFile['category']) => {
+      if (resourceFiles === null) return null;
       return resourceFiles.filter(f => f.country === selectedCountry && f.category === category);
+  };
+
+  const handleLoadFiles = async () => {
+      if (resourceFiles !== null) return;
+      setIsFileLoading(true);
+      await onLoadResourceFiles();
+      setIsFileLoading(false);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -309,6 +334,12 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
       
       const file = e.target.files?.[0];
       if (!file) return;
+
+      if (resourceFiles === null) {
+          alert("请先点击加载文档列表，然后再上传。");
+          if (uploadInputRef.current) uploadInputRef.current.value = '';
+          return;
+      }
 
       if (file.size > 10 * 1024 * 1024) {
           alert("文件大小不能超过 10MB");
@@ -358,7 +389,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
   };
 
   const handleDeleteFile = (id: string) => {
-      if (!isSuperAdmin) return;
+      if (!isSuperAdmin || resourceFiles === null) return;
       if (window.confirm("确定删除此文档吗?")) {
           onUpdateResourceFiles(resourceFiles.filter(f => f.id !== id));
           if (onActivity && currentUser) onActivity(currentUser.username);
@@ -395,7 +426,7 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
   };
 
   const updateFileDesc = (id: string, desc: string) => {
-      if (!canManageFiles) return;
+      if (!canManageFiles || resourceFiles === null) return;
       const updated = resourceFiles.map(f => f.id === id ? { ...f, description: desc } : f);
       onUpdateResourceFiles(updated);
       if (onActivity && currentUser) onActivity(currentUser.username);
@@ -403,12 +434,39 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
 
   // --- UI COMPONENTS ---
 
+  const startResize = (e: React.MouseEvent, id: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.pageX;
+      const startW = colWidths[id] || 100;
+      
+      const onMove = (mv: MouseEvent) => {
+          const newW = Math.max(50, startW + (mv.pageX - startX));
+          setColWidths(prev => ({ ...prev, [id]: newW }));
+      };
+      
+      const onUp = () => {
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+      };
+      
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+  };
+
   const ResizableTh = (id: string, label: string, textColorClass = "text-gray-500") => {
     const w = colWidths[id] || 100;
     return (
         <th style={{ width: w, minWidth: w }} className={`relative px-4 py-3 text-left text-xs font-medium uppercase group ${textColorClass}`}>
-           <div className="flex items-center justify-between w-full h-full">
+           <div className="flex items-center justify-between w-full h-full relative">
                <span className="truncate">{label}</span>
+               <div 
+                   className="absolute -right-2 top-0 bottom-0 w-4 cursor-col-resize z-20 flex justify-center hover:bg-blue-400/20"
+                   onMouseDown={(e) => startResize(e, id)}
+                   onClick={(e) => e.stopPropagation()}
+               >
+                  <div className="w-[1px] h-full bg-gray-200 group-hover:bg-blue-400"></div>
+               </div>
            </div>
         </th>
     );
@@ -613,6 +671,8 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                 onView={viewFile}
                                 onDownload={downloadFile}
                                 onEnterKey={handleEnterKey}
+                                onLoad={handleLoadFiles}
+                                loading={isFileLoading}
                             />
                         </div>
                     )}
@@ -677,6 +737,8 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                 onView={viewFile}
                                 onDownload={downloadFile}
                                 onEnterKey={handleEnterKey}
+                                onLoad={handleLoadFiles}
+                                loading={isFileLoading}
                             />
                         </div>
                     )}
@@ -816,6 +878,8 @@ export const ResourceDatabase: React.FC<ResourceDatabaseProps> = ({
                                                 onView={viewFile}
                                                 onDownload={downloadFile}
                                                 onEnterKey={handleEnterKey}
+                                                onLoad={handleLoadFiles}
+                                                loading={isFileLoading}
                                             />
                                         </div>
                                     </>
